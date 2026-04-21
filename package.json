@@ -1,0 +1,23 @@
+{
+  "name": "hevy-trainer",
+  "version": "1.0.0",
+  "description": "AI personal trainer powered by Hevy workout data",
+  "type": "module",
+  "scripts": {
+    "setup": "tsx src/setup.ts",
+    "start": "tsx src/index.ts",
+    "start:ollama": "tsx src/ollama.ts",
+    "dev": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.52.0",
+    "@modelcontextprotocol/sdk": "^1.10.2",
+    "dotenv": "^16.4.5",
+    "openai": "^4.77.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
