@@ -162,8 +162,7 @@ export default function Home() {
             rows={1}
             disabled={isLoading}
             className="flex-1 border border-white/10 rounded-xl px-4 py-3 text-sm placeholder-white/30 resize-none focus:outline-none focus:border-brand/50 disabled:opacity-50 transition-colors"
-            style={{ background: "#1a1a1a", color: "#e5e5e5" }}
-            style={{ minHeight: "48px", maxHeight: "120px" }}
+            style={{ background: "#1a1a1a", color: "#e5e5e5", minHeight: "48px", maxHeight: "120px" }}
           />
           <button
             type="submit"
