@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body {
+  height: 100%;
+  background: #0a0a0a;
+  color: #e5e5e5;
+}
+
+textarea, input {
+  background: #1a1a1a !important;
+  color: #aaaaaa !important;
+  caret-color: #22c55e;
+  -webkit-text-fill-color: #aaaaaa !important;
+}
+
+/* Override browser autofill yellow/white */
+textarea:-webkit-autofill,
+input:-webkit-autofill {
+  -webkit-box-shadow: 0 0 0px 1000px #1a1a1a inset !important;
+  -webkit-text-fill-color: #aaaaaa !important;
+}
