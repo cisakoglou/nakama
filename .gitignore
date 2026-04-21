@@ -1,2 +1,7 @@
 .env
-./web/.env.local
+.env.local
+node_modules/
+web/node_modules/
+web/.next/
+web/.env.local
+.next/
