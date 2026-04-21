@@ -65,6 +65,15 @@ async function runTrainer() {
 
   const anthropic = new Anthropic({ apiKey: anthropicApiKey });
   const messages: Anthropic.MessageParam[] = [];
+  let sessionInputTokens = 0;
+  let sessionOutputTokens = 0;
+
+  // Haiku pricing: $0.80/M input, $4.00/M output (cache reads: $0.08/M)
+  const estimateCost = () => {
+    const inputCost = (sessionInputTokens / 1_000_000) * 0.80;
+    const outputCost = (sessionOutputTokens / 1_000_000) * 4.00;
+    return (inputCost + outputCost).toFixed(4);
+  };
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   const ask = (q: string): Promise<string> => new Promise((res) => rl.question(q, res));
@@ -82,14 +91,16 @@ async function runTrainer() {
     // Agentic loop — keep going until end_turn
     while (true) {
       const response = await anthropic.messages.create({
-        model: "claude-opus-4-5",
-        max_tokens: 4096,
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 1024,
         system: SYSTEM_PROMPT,
         tools,
         messages,
       });
 
       messages.push({ role: "assistant", content: response.content });
+      sessionInputTokens += response.usage.input_tokens;
+      sessionOutputTokens += response.usage.output_tokens;
 
       // Print any text blocks
       for (const block of response.content) {
@@ -103,7 +114,7 @@ async function runTrainer() {
       if (response.stop_reason === "tool_use") {
         const toolUseBlocks = response.content.filter(
           (b): b is ToolCallBlock => b.type === "tool_use"
-        );
+        ) as ToolCallBlock[];
 
         const toolResults: Anthropic.ToolResultBlockParam[] = await Promise.all(
           toolUseBlocks.map(async (block) => {
@@ -138,7 +149,7 @@ async function runTrainer() {
 
   rl.close();
   await mcp.close();
-  console.log("Goodbye!");
+  console.log(`\nGoodbye! Session cost: ~$${estimateCost()} (${sessionInputTokens} in / ${sessionOutputTokens} out tokens)`);
 }
 
 runTrainer().catch((err) => {
