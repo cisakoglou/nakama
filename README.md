@@ -1,5 +1,9 @@
 # Nakama
 
+<p align="center">
+  <img src="img/nakama-wordmark-readme.png" alt="Nakama wordmark" width="480">
+</p>
+
 **Your training companion, grounded in your workouts.**
 
 Nakama is an AI fitness coach for people who track strength training in Hevy
@@ -127,6 +131,8 @@ Installable PWA support and mobile layout improvements are tracked in
 [issue #3](https://github.com/cisakoglou/nakama/issues/3).
 
 ## Branding
+
+<img src="web/app/apple-icon.png" alt="Nakama chain icon" width="96" height="96">
 
 Original artwork lives in `img/`. The sign-in screen uses the Nakama wordmark,
 and the chat uses the chain mark; optimized versions are in `web/public/brand/`.
