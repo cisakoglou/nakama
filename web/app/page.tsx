@@ -1,236 +1,174 @@
 "use client";
 
-import { useChat } from "ai/react";
 import Image from "next/image";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
+import { SignInForm } from "@/components/sign-in-form";
+import { ProfileForm } from "@/components/profile-form";
+import { HevyConnectionForm } from "@/components/hevy-connection-form";
+import { ChatPanel } from "@/components/chat-panel";
+import { readApiResponse } from "@/lib/api-response";
+import {
+  accountSchema, EQUIPMENT_LABELS, EXPERIENCE_LABELS, GOAL_LABELS, type Account,
+} from "@/lib/profile";
+import { createClient } from "@/lib/supabase/client";
 
-const TOOL_LABELS: Record<string, string> = {
-  "get-workouts": "Fetching workouts…",
-  "get-workout": "Loading workout…",
-  "get-workout-count": "Counting workouts…",
-  "search-exercise-templates": "Searching exercises…",
-  "get-exercise-templates": "Loading exercises…",
-  "get-exercise-history": "Fetching exercise history…",
-  "get-routines": "Loading routines…",
-  "get-routine": "Loading routine…",
-  "create-routine": "Creating routine…",
-  "update-routine": "Updating routine…",
-  "create-workout": "Logging workout…",
-};
+type Screen =
+  | { kind: "loading" }
+  | { kind: "sign-in"; message?: string }
+  | { kind: "denied"; message: string }
+  | { kind: "error"; message: string }
+  | { kind: "account"; account: Account; editing: boolean };
 
 export default function Home() {
-  const [password, setPassword] = useState("");
-  const [authed, setAuthed] = useState(false);
-  const [pwError, setPwError] = useState(false);
+  const [screen, setScreen] = useState<Screen>({ kind: "loading" });
+  const [reload, setReload] = useState(0);
+  const [signingOut, setSigningOut] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
 
-  const { messages, input, handleInputChange, handleSubmit, isLoading, error } = useChat({
-    headers: { "x-app-password": password },
-    onError: (e) => { if (e.message.includes("401")) { setAuthed(false); setPwError(true); } },
-  });
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
+  function reloadAccount() {
+    setScreen({ kind: "loading" });
+    setActionError(null);
+    setShowSettings(false);
+    setReload((value) => value + 1);
+  }
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
-
-  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSubmit(e as unknown as React.FormEvent<HTMLFormElement>);
+    const controller = new AbortController();
+    async function loadAccount() {
+      try {
+        const response = await fetch("/api/account", {
+          cache: "no-store", signal: controller.signal,
+        });
+        if (controller.signal.aborted) return;
+        if (response.status === 401) {
+          const authError = new URLSearchParams(window.location.search).get("auth_error");
+          const message = authError === "link_expired"
+            ? "This sign-in link has expired or has already been used. Please request a new link."
+            : authError === "sign_in_failed"
+              ? "Sign-in failed. Try Google again, or request a new email link and open it in the same browser."
+              : undefined;
+          if (authError) window.history.replaceState(null, "", "/");
+          setScreen({
+            kind: "sign-in",
+            message,
+          });
+          return;
+        }
+        if (response.status === 403) {
+          setScreen({ kind: "denied", message: "Nakama is invite-only. Sign out and use your invited email address." });
+          return;
+        }
+        const account = await readApiResponse(response, accountSchema);
+        if (!controller.signal.aborted) setScreen({ kind: "account", account, editing: false });
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        if (!(error instanceof Error)) throw error;
+        setScreen({ kind: "error", message: error.message });
+      }
     }
-  };
+    void loadAccount();
+    return () => controller.abort();
+  }, [reload]);
 
-  if (!authed) {
-    return (
-      <main className="flex min-h-dvh items-center justify-center px-5 py-10">
-        <div className="w-full max-w-sm">
-          <Image
-            src="/brand/nakama-wordmark.webp"
-            alt="Nakama"
-            width={900}
-            height={180}
-            sizes="288px"
-            priority
-            className="mx-auto mb-9 h-auto w-72 max-w-full"
-          />
-          <form
-            onSubmit={(e) => { e.preventDefault(); setAuthed(true); setPwError(false); }}
-            className="rounded-3xl border border-line bg-surface p-7 shadow-[0_20px_60px_-25px_rgba(52,52,45,0.22)] sm:p-8"
-          >
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-ink-muted">
-              Your training companion
-            </p>
-            <h1 className="mt-3 text-3xl font-semibold leading-tight tracking-tight">
-              A stronger next session.
-            </h1>
-            <p className="mt-3 text-sm leading-6 text-ink-muted">
-              Turn your Hevy workouts into clear next steps, one conversation at a time.
-            </p>
-            <label htmlFor="app-password" className="mb-2 mt-7 block text-sm font-medium">
-              App password
-            </label>
-            <input
-              id="app-password"
-              type="password"
-              autoComplete="current-password"
-              placeholder="Enter your app password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoFocus
-              aria-invalid={pwError}
-              aria-describedby={pwError ? "password-error" : undefined}
-              className="w-full rounded-xl border border-line bg-canvas px-4 py-3 text-base text-ink placeholder:text-ink-muted focus:border-ink/40 focus:outline-none focus:ring-2 focus:ring-brand/30"
-            />
-            {pwError && (
-              <p id="password-error" role="alert" className="mt-2 text-sm text-red-700">
-                Incorrect password
-              </p>
-            )}
-            <button
-              type="submit"
-              disabled={!password}
-              className="mt-4 w-full rounded-xl bg-brand px-4 py-3 text-sm font-semibold text-ink transition-colors hover:bg-brand-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Open Nakama
-            </button>
-          </form>
-          <p className="mt-6 text-center text-xs text-ink-muted">
-            Your workouts. Your next step.
-          </p>
-        </div>
-      </main>
-    );
+  useEffect(() => {
+    if (screen.kind === "loading" || screen.kind === "error") return;
+    const { data } = createClient().auth.onAuthStateChange((event) => {
+      if (event === "SIGNED_OUT") setScreen({ kind: "sign-in" });
+      if (event === "SIGNED_IN") reloadAccount();
+    });
+    return () => data.subscription.unsubscribe();
+  }, [screen.kind]);
+
+  async function signOut() {
+    setSigningOut(true);
+    setActionError(null);
+    try {
+      const { error } = await createClient().auth.signOut();
+      if (error) throw error;
+      setScreen({ kind: "sign-in" });
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      setActionError(error.message);
+    } finally {
+      setSigningOut(false);
+    }
+  }
+
+  if (screen.kind === "account" && screen.account.profile && screen.account.connection.connected && !screen.editing && !showSettings) {
+    return <ChatPanel
+      key={`${screen.account.user.id}:${screen.account.connection.revision}:${screen.account.profile.updated_at}`}
+      onSettings={() => setShowSettings(true)} onSignOut={() => { void signOut(); }}
+      signingOut={signingOut} accountError={actionError}
+    />;
   }
 
   return (
-    <main className="mx-auto flex h-dvh w-full max-w-3xl flex-col sm:border-x sm:border-line">
-      <header className="flex shrink-0 items-center gap-3 border-b border-line bg-surface px-4 py-4 sm:px-6">
+    <main className="flex min-h-dvh items-center justify-center px-5 py-10">
+      <div className="w-full max-w-lg">
         <Image
-          src="/brand/nakama-mark.webp"
-          alt=""
-          width={320}
-          height={320}
-          sizes="48px"
-          className="h-12 w-12 shrink-0"
+          src="/brand/nakama-wordmark.webp" alt="Nakama" width={900} height={180}
+          sizes="288px" priority className="mx-auto mb-9 h-auto w-72 max-w-full"
         />
-        <div>
-          <p className="text-lg font-semibold tracking-tight">Nakama</p>
-          <p className="text-xs text-ink-muted">Your training companion</p>
-        </div>
-        <span className="ml-auto hidden rounded-full border border-line bg-canvas px-3 py-1.5 text-xs text-ink-muted sm:inline-flex">
-          Hevy + Claude
-        </span>
-      </header>
-
-      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-6 sm:px-6">
-        {messages.length === 0 && (
-          <div className="mx-auto max-w-md py-8 text-center sm:py-14">
-            <Image
-              src="/brand/nakama-mark.webp"
-              alt=""
-              width={320}
-              height={320}
-              sizes="96px"
-              className="mx-auto mb-5 h-24 w-24"
-            />
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-ink-muted">
-              A little direction. More progress.
-            </p>
-            <h1 className="mt-3 text-2xl font-semibold tracking-tight sm:text-3xl">
-              What are we working on today?
-            </h1>
-            <p className="mt-3 text-sm leading-6 text-ink-muted">
-              Review your progress, plan your next session, or build a routine around how you feel.
-            </p>
-            <p className="mt-6 rounded-2xl border border-line bg-surface px-5 py-4 text-sm leading-6 text-ink-muted">
-              Try asking: &ldquo;What should I aim for on bench press next time?&rdquo;
-            </p>
-          </div>
-        )}
-
-        {messages.map((m) => (
-          <div key={m.id}>
-            {m.parts
-              ?.filter((p) => p.type === "tool-invocation")
-              .map((p, i) => {
-                if (p.type !== "tool-invocation") return null;
-                const label = TOOL_LABELS[p.toolInvocation.toolName] ?? `${p.toolInvocation.toolName}…`;
-                const done = p.toolInvocation.state === "result";
-                return (
-                  <div
-                    key={i}
-                    className="mb-2 ml-1 flex items-center gap-2 text-xs text-ink-muted"
-                  >
-                    <span className={`h-1.5 w-1.5 rounded-full ${done ? "bg-brand" : "animate-pulse bg-ink/30"}`} />
-                    {label}
-                  </div>
-                );
-              })}
-
-            {m.content && (
-              <div className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-                <div
-                  className={`max-w-[85%] whitespace-pre-wrap break-words rounded-2xl px-4 py-3 text-sm leading-relaxed ${
-                    m.role === "user"
-                      ? "rounded-br-sm bg-brand-soft font-medium text-ink"
-                      : "rounded-bl-sm border border-line bg-surface text-ink shadow-sm"
-                  }`}
-                >
-                  {m.content}
-                </div>
-              </div>
-            )}
-          </div>
-        ))}
-
-        {isLoading && messages[messages.length - 1]?.role === "user" && (
-          <div className="flex justify-start">
-            <div className="rounded-2xl rounded-bl-sm border border-line bg-surface px-4 py-3">
-              <span className="flex gap-1">
-                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-muted [animation-delay:0ms]" />
-                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-muted [animation-delay:150ms]" />
-                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-muted [animation-delay:300ms]" />
-              </span>
-            </div>
-          </div>
-        )}
-
-        {error && (
-          <p role="alert" className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-center text-sm text-red-700">
-            {error.message}
-          </p>
-        )}
-
-        <div ref={bottomRef} />
+        <section className="rounded-3xl border border-line bg-surface p-6 shadow-[0_20px_60px_-25px_rgba(52,52,45,0.22)] sm:p-8">
+          {screen.kind === "loading" && <p role="status">Loading your training space...</p>}
+          {screen.kind === "sign-in" && <SignInForm message={screen.message} onRefresh={reloadAccount} />}
+          {screen.kind === "error" && (
+            <>
+              <h1 className="text-2xl font-semibold">Unable to open Nakama</h1>
+              <p role="alert" className="mt-3 text-sm text-red-700">{screen.message}</p>
+              <button onClick={reloadAccount} className="mt-5 rounded-xl bg-brand px-4 py-3 font-semibold">Try again</button>
+            </>
+          )}
+          {screen.kind === "denied" && (
+            <>
+              <h1 className="text-2xl font-semibold">An invitation is required</h1>
+              <p role="alert" className="mt-3 text-sm leading-6 text-ink-muted">{screen.message}</p>
+            </>
+          )}
+          {screen.kind === "account" && (
+            <>
+              <p className="break-all text-sm text-ink-muted">{screen.account.user.email}</p>
+              {screen.editing || !screen.account.profile ? (
+                <ProfileForm
+                  profile={screen.account.profile}
+                  onSaved={reloadAccount}
+                  onCancel={screen.account.profile ? () => setScreen({ ...screen, editing: false }) : undefined}
+                />
+              ) : (
+                <>
+                  <h1 className="mt-3 text-3xl font-semibold tracking-tight">Your training space</h1>
+                  <p className="mt-3 text-sm leading-6 text-ink-muted">Your preferences are saved to your account.</p>
+                  <dl className="mt-5 space-y-3 rounded-2xl border border-line bg-canvas p-5 text-sm">
+                    <div><dt className="text-ink-muted">Goal</dt><dd>{GOAL_LABELS[screen.account.profile.goal]}</dd></div>
+                    <div><dt className="text-ink-muted">Experience</dt><dd>{EXPERIENCE_LABELS[screen.account.profile.experience]}</dd></div>
+                    <div><dt className="text-ink-muted">Schedule</dt><dd>{screen.account.profile.training_days} days per week</dd></div>
+                    <div><dt className="text-ink-muted">Equipment</dt><dd>{EQUIPMENT_LABELS[screen.account.profile.equipment]}</dd></div>
+                    <div><dt className="text-ink-muted">Weight units</dt><dd>{screen.account.profile.units}</dd></div>
+                  </dl>
+                  <button
+                    onClick={() => setScreen({ ...screen, editing: true })}
+                    className="mt-5 rounded-xl bg-brand px-4 py-3 text-sm font-semibold hover:bg-brand-hover"
+                  >Edit preferences</button>
+                  {screen.account.connection.connected && <button
+                    onClick={() => setShowSettings(false)}
+                    className="ml-4 mt-5 min-h-11 text-sm underline underline-offset-4"
+                  >Back to coaching</button>}
+                  <HevyConnectionForm connection={screen.account.connection} onChanged={reloadAccount} />
+                </>
+              )}
+            </>
+          )}
+          {actionError && <p role="alert" className="mt-4 text-sm text-red-700">{actionError}</p>}
+          {(screen.kind === "account" || screen.kind === "denied") && (
+            <button
+              onClick={signOut} disabled={signingOut}
+              className="mt-6 min-h-11 text-sm text-ink-muted underline underline-offset-4 disabled:opacity-50"
+            >{signingOut ? "Signing out..." : "Sign out"}</button>
+          )}
+        </section>
+        <p className="mt-6 text-center text-xs text-ink-muted">Invite-only beta. Your workouts. Your next step.</p>
       </div>
-
-      <footer className="shrink-0 border-t border-line bg-surface px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-4 sm:px-6">
-        <form onSubmit={handleSubmit} className="flex items-end gap-3">
-          <label htmlFor="chat-input" className="sr-only">Message your training companion</label>
-          <textarea
-            id="chat-input"
-            ref={inputRef}
-            value={input}
-            onChange={handleInputChange}
-            onKeyDown={onKeyDown}
-            placeholder="Ask your training companion…"
-            rows={1}
-            disabled={isLoading}
-            className="min-w-0 flex-1 resize-none rounded-xl border border-line bg-canvas px-4 py-3 text-base leading-6 text-ink transition-colors placeholder:text-ink-muted focus:border-ink/40 focus:outline-none focus:ring-2 focus:ring-brand/30 disabled:opacity-50"
-            style={{ minHeight: "48px", maxHeight: "120px" }}
-          />
-          <button
-            type="submit"
-            aria-label="Send message"
-            disabled={isLoading || !input.trim()}
-            className="flex h-[50px] w-12 shrink-0 items-center justify-center rounded-xl bg-brand text-xl font-semibold text-ink transition-colors hover:bg-brand-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            ↑
-          </button>
-        </form>
-        <p className="mt-3 text-center text-xs text-ink-muted">Enter to send · Shift+Enter for a new line</p>
-      </footer>
     </main>
   );
 }

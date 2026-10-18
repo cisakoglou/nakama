@@ -2,6 +2,9 @@
   "name": "hevy-trainer-web",
   "version": "1.0.0",
   "private": true,
+  "engines": {
+    "node": "22.x"
+  },
   "scripts": {
     "dev": "next dev --port 3002",
     "build": "next build",
@@ -9,21 +12,31 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^1.0.0",
-    "@modelcontextprotocol/sdk": "^1.10.2",
-    "ai": "^4.0.0",
-    "next": "^15.1.0",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "@ai-sdk/anthropic": "^3.0.133",
+    "@ai-sdk/react": "^3.0.312",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@supabase/ssr": "^0.12.7",
+    "@supabase/supabase-js": "^2.118.0",
+    "ai": "^6.0.309",
+    "hevy-mcp": "6.2.1",
+    "next": "^15.5.28",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "server-only": "0.0.1",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.10",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "autoprefixer": "^10.4.0",
-    "postcss": "^8.4.0",
+    "postcss": "^8.5.30",
     "tailwindcss": "^3.4.0",
     "typescript": "^5.7.0",
     "vitest": "^4.1.12"
+  },
+  "overrides": {
+    "postcss": "$postcss"
   }
 }
