@@ -7,11 +7,15 @@ export const maxDuration = 120;
 
 export async function POST(req: Request) {
   const appPassword = process.env.APP_PASSWORD;
-  if (appPassword) {
-    const auth = req.headers.get("x-app-password");
-    if (auth !== appPassword) {
-      return new Response("Unauthorized", { status: 401 });
-    }
+  if (!appPassword) {
+    return new Response("Chat is unavailable: server authentication is not configured.", {
+      status: 503,
+    });
+  }
+
+  const auth = req.headers.get("x-app-password");
+  if (auth !== appPassword) {
+    return new Response("Unauthorized", { status: 401 });
   }
 
   const { messages } = await req.json();

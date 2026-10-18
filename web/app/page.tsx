@@ -1,6 +1,7 @@
 "use client";
 
 import { useChat } from "ai/react";
+import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
 
 const TOOL_LABELS: Record<string, string> = {
@@ -42,61 +43,114 @@ export default function Home() {
 
   if (!authed) {
     return (
-      <div className="flex items-center justify-center h-screen">
-        <form
-          onSubmit={(e) => { e.preventDefault(); setAuthed(true); setPwError(false); }}
-          className="flex flex-col items-center gap-4 w-72"
-        >
-          <div className="w-12 h-12 rounded-full bg-brand flex items-center justify-center text-black font-bold text-xl">N</div>
-          <p className="font-semibold text-white">Nakama</p>
-          <input
-            type="password"
-            placeholder="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoFocus
-            className="w-full rounded-xl px-4 py-3 text-sm border border-white/10 focus:outline-none focus:border-brand/50"
-            style={{ background: "#1a1a1a", color: "#e5e5e5" }}
+      <main className="flex min-h-dvh items-center justify-center px-5 py-10">
+        <div className="w-full max-w-sm">
+          <Image
+            src="/brand/nakama-wordmark.webp"
+            alt="Nakama"
+            width={900}
+            height={180}
+            sizes="288px"
+            priority
+            className="mx-auto mb-9 h-auto w-72 max-w-full"
           />
-          {pwError && <p className="text-red-400 text-xs">Incorrect password</p>}
-          <button
-            type="submit"
-            disabled={!password}
-            className="w-full rounded-xl bg-brand text-black font-semibold py-3 text-sm disabled:opacity-30 hover:bg-green-400 transition-colors"
+          <form
+            onSubmit={(e) => { e.preventDefault(); setAuthed(true); setPwError(false); }}
+            className="rounded-3xl border border-line bg-surface p-7 shadow-[0_20px_60px_-25px_rgba(52,52,45,0.22)] sm:p-8"
           >
-            Enter
-          </button>
-        </form>
-      </div>
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-ink-muted">
+              Your training companion
+            </p>
+            <h1 className="mt-3 text-3xl font-semibold leading-tight tracking-tight">
+              A stronger next session.
+            </h1>
+            <p className="mt-3 text-sm leading-6 text-ink-muted">
+              Turn your Hevy workouts into clear next steps, one conversation at a time.
+            </p>
+            <label htmlFor="app-password" className="mb-2 mt-7 block text-sm font-medium">
+              App password
+            </label>
+            <input
+              id="app-password"
+              type="password"
+              autoComplete="current-password"
+              placeholder="Enter your app password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoFocus
+              aria-invalid={pwError}
+              aria-describedby={pwError ? "password-error" : undefined}
+              className="w-full rounded-xl border border-line bg-canvas px-4 py-3 text-base text-ink placeholder:text-ink-muted focus:border-ink/40 focus:outline-none focus:ring-2 focus:ring-brand/30"
+            />
+            {pwError && (
+              <p id="password-error" role="alert" className="mt-2 text-sm text-red-700">
+                Incorrect password
+              </p>
+            )}
+            <button
+              type="submit"
+              disabled={!password}
+              className="mt-4 w-full rounded-xl bg-brand px-4 py-3 text-sm font-semibold text-ink transition-colors hover:bg-brand-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Open Nakama
+            </button>
+          </form>
+          <p className="mt-6 text-center text-xs text-ink-muted">
+            Your workouts. Your next step.
+          </p>
+        </div>
+      </main>
     );
   }
 
   return (
-    <div className="flex flex-col h-screen max-w-2xl mx-auto">
-      {/* Header */}
-      <div className="flex items-center gap-3 px-4 py-4 border-b border-white/10">
-        <div className="w-8 h-8 rounded-full bg-brand flex items-center justify-center text-black font-bold text-sm">
-          T
-        </div>
+    <main className="mx-auto flex h-dvh w-full max-w-3xl flex-col sm:border-x sm:border-line">
+      <header className="flex shrink-0 items-center gap-3 border-b border-line bg-surface px-4 py-4 sm:px-6">
+        <Image
+          src="/brand/nakama-mark.webp"
+          alt=""
+          width={320}
+          height={320}
+          sizes="48px"
+          className="h-12 w-12 shrink-0"
+        />
         <div>
-          <p className="font-semibold text-sm">Nakama</p>
-          <p className="text-xs text-white/40">Powered by Hevy + Claude</p>
+          <p className="text-lg font-semibold tracking-tight">Nakama</p>
+          <p className="text-xs text-ink-muted">Your training companion</p>
         </div>
-      </div>
+        <span className="ml-auto hidden rounded-full border border-line bg-canvas px-3 py-1.5 text-xs text-ink-muted sm:inline-flex">
+          Hevy + Claude
+        </span>
+      </header>
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-6 sm:px-6">
         {messages.length === 0 && (
-          <div className="text-center text-white/30 text-sm mt-16 space-y-2">
-            <p className="text-2xl">🏋️</p>
-            <p>Ask me about your progress, plan your next session,</p>
-            <p>or create a routine tailored to how you feel today.</p>
+          <div className="mx-auto max-w-md py-8 text-center sm:py-14">
+            <Image
+              src="/brand/nakama-mark.webp"
+              alt=""
+              width={320}
+              height={320}
+              sizes="96px"
+              className="mx-auto mb-5 h-24 w-24"
+            />
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-ink-muted">
+              A little direction. More progress.
+            </p>
+            <h1 className="mt-3 text-2xl font-semibold tracking-tight sm:text-3xl">
+              What are we working on today?
+            </h1>
+            <p className="mt-3 text-sm leading-6 text-ink-muted">
+              Review your progress, plan your next session, or build a routine around how you feel.
+            </p>
+            <p className="mt-6 rounded-2xl border border-line bg-surface px-5 py-4 text-sm leading-6 text-ink-muted">
+              Try asking: &ldquo;What should I aim for on bench press next time?&rdquo;
+            </p>
           </div>
         )}
 
         {messages.map((m) => (
           <div key={m.id}>
-            {/* Tool calls */}
             {m.parts
               ?.filter((p) => p.type === "tool-invocation")
               .map((p, i) => {
@@ -106,22 +160,21 @@ export default function Home() {
                 return (
                   <div
                     key={i}
-                    className="flex items-center gap-2 text-xs text-white/30 mb-1 ml-1"
+                    className="mb-2 ml-1 flex items-center gap-2 text-xs text-ink-muted"
                   >
-                    <span className={`w-1.5 h-1.5 rounded-full ${done ? "bg-brand" : "bg-white/20 animate-pulse"}`} />
+                    <span className={`h-1.5 w-1.5 rounded-full ${done ? "bg-brand" : "animate-pulse bg-ink/30"}`} />
                     {label}
                   </div>
                 );
               })}
 
-            {/* Text content */}
             {m.content && (
               <div className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
                 <div
-                  className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap ${
+                  className={`max-w-[85%] whitespace-pre-wrap break-words rounded-2xl px-4 py-3 text-sm leading-relaxed ${
                     m.role === "user"
-                      ? "bg-brand text-black font-medium rounded-br-sm"
-                      : "bg-white/8 text-white/90 rounded-bl-sm"
+                      ? "rounded-br-sm bg-brand-soft font-medium text-ink"
+                      : "rounded-bl-sm border border-line bg-surface text-ink shadow-sm"
                   }`}
                 >
                   {m.content}
@@ -133,47 +186,51 @@ export default function Home() {
 
         {isLoading && messages[messages.length - 1]?.role === "user" && (
           <div className="flex justify-start">
-            <div className="bg-white/8 rounded-2xl rounded-bl-sm px-4 py-3">
+            <div className="rounded-2xl rounded-bl-sm border border-line bg-surface px-4 py-3">
               <span className="flex gap-1">
-                <span className="w-1.5 h-1.5 bg-white/30 rounded-full animate-bounce [animation-delay:0ms]" />
-                <span className="w-1.5 h-1.5 bg-white/30 rounded-full animate-bounce [animation-delay:150ms]" />
-                <span className="w-1.5 h-1.5 bg-white/30 rounded-full animate-bounce [animation-delay:300ms]" />
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-muted [animation-delay:0ms]" />
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-muted [animation-delay:150ms]" />
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-muted [animation-delay:300ms]" />
               </span>
             </div>
           </div>
         )}
 
         {error && (
-          <p className="text-red-400 text-xs text-center">{error.message}</p>
+          <p role="alert" className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-center text-sm text-red-700">
+            {error.message}
+          </p>
         )}
 
         <div ref={bottomRef} />
       </div>
 
-      {/* Input */}
-      <div className="px-4 py-4 border-t border-white/10">
-        <form onSubmit={handleSubmit} className="flex gap-2 items-end">
+      <footer className="shrink-0 border-t border-line bg-surface px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-4 sm:px-6">
+        <form onSubmit={handleSubmit} className="flex items-end gap-3">
+          <label htmlFor="chat-input" className="sr-only">Message your training companion</label>
           <textarea
+            id="chat-input"
             ref={inputRef}
             value={input}
             onChange={handleInputChange}
             onKeyDown={onKeyDown}
-            placeholder="Ask your trainer…"
+            placeholder="Ask your training companion…"
             rows={1}
             disabled={isLoading}
-            className="flex-1 border border-white/10 rounded-xl px-4 py-3 text-sm placeholder-white/30 resize-none focus:outline-none focus:border-brand/50 disabled:opacity-50 transition-colors"
-            style={{ background: "#1a1a1a", color: "#e5e5e5", minHeight: "48px", maxHeight: "120px" }}
+            className="min-w-0 flex-1 resize-none rounded-xl border border-line bg-canvas px-4 py-3 text-base leading-6 text-ink transition-colors placeholder:text-ink-muted focus:border-ink/40 focus:outline-none focus:ring-2 focus:ring-brand/30 disabled:opacity-50"
+            style={{ minHeight: "48px", maxHeight: "120px" }}
           />
           <button
             type="submit"
+            aria-label="Send message"
             disabled={isLoading || !input.trim()}
-            className="w-10 h-10 rounded-xl bg-brand text-black font-bold text-lg flex items-center justify-center disabled:opacity-30 hover:bg-green-400 transition-colors flex-shrink-0"
+            className="flex h-[50px] w-12 shrink-0 items-center justify-center rounded-xl bg-brand text-xl font-semibold text-ink transition-colors hover:bg-brand-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink disabled:cursor-not-allowed disabled:opacity-40"
           >
             ↑
           </button>
         </form>
-        <p className="text-white/20 text-xs text-center mt-2">Enter to send · Shift+Enter for new line</p>
-      </div>
-    </div>
+        <p className="mt-3 text-center text-xs text-ink-muted">Enter to send · Shift+Enter for a new line</p>
+      </footer>
+    </main>
   );
 }

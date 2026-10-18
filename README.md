@@ -73,17 +73,50 @@ npm run dev
 Open <http://localhost:3002>. The web app always uses Claude Haiku 4.5
 (`claude-haiku-4-5-20251001`); it does not route requests between models.
 
+Run the API regression tests from `web` with `npm test`. The tests mock Hevy
+and AI streaming; they do not send provider requests or require API keys.
+
 ## Configuration and deployment
 
 - Edit `TRAINER.md` to customize your training profile and coaching preferences.
   Restart or redeploy the app after changing it.
 - Railway builds and runs the `web` app using `railway.json`. Configure the same
   three environment variables in the Railway service.
-- **Keep `APP_PASSWORD` set on public deployments.** Until
-  [issue #1](https://github.com/cisakoglou/nakama/issues/1) is fixed, missing or
-  empty configuration leaves the chat API open even though the page shows a
-  password screen.
+- **`APP_PASSWORD` is required.** If missing or empty, the chat API returns
+  HTTP 503 without reading the chat request or calling Hevy or Anthropic.
+  Missing or incorrect request credentials return HTTP 401. A valid password
+  preserves normal chat streaming.
 - Never commit API keys or local environment files.
+
+## Hevy connection decision (2026-10-18)
+
+**Continue development, but hold invitations to other users until the hosted
+integration requirements are clarified and user isolation is implemented.**
+
+The [official API documentation](https://api.hevyapp.com/docs/) currently limits
+access to **Hevy Pro** users. Users obtain their own API key from
+[Hevy developer settings](https://hevy.com/settings?developer); documented
+requests authenticate with an `api-key` header. Do not ask for a Hevy password
+or present a one-click OAuth flow that is not documented as supported.
+
+The public API specification does not document an OAuth flow or a numeric
+request-rate limit. Its pagination limits are not a rate-limit allowance.
+It also warns that the API may change or be discontinued.
+
+Before committing to hosted onboarding, resolve these items in
+[issue #10](https://github.com/cisakoglou/nakama/issues/10):
+
+- Confirm with Hevy whether hosted multi-user use, storing user-provided keys,
+  and eventual commercial use are permitted, and whether a partner/OAuth
+  connection option exists. Public API access alone does not establish this.
+- Confirm rate limits and expected retry behavior. The official documentation
+  lists `pavel@hevyapp.com` for API questions; no outreach has been sent.
+- Test key creation and connection on a real phone with an eligible user.
+  This authenticated mobile walkthrough has not yet been performed.
+
+The provisional beta flow is guided, one-time API-key entry for invited Hevy
+Pro users, subject to those checks. State this requirement before signup and
+do not promise a frictionless connection until it has been tested.
 
 ## Phone access
 
@@ -92,6 +125,14 @@ Screen** from the browser's share menu or main menu. Chat requires internet.
 Installable PWA support and mobile layout improvements are tracked in
 [issue #2](https://github.com/cisakoglou/nakama/issues/2) and
 [issue #3](https://github.com/cisakoglou/nakama/issues/3).
+
+## Branding
+
+Original artwork lives in `img/`. The sign-in screen uses the Nakama wordmark,
+and the chat uses the chain mark; optimized versions are in `web/public/brand/`.
+Browser and Apple home-screen icons live in `web/app/icon.png` and
+`web/app/apple-icon.png`. The UI uses warm ivory, charcoal, and gold, with theme
+colors defined in `web/tailwind.config.ts`.
 
 ## Code
 
