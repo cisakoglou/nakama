@@ -2,7 +2,8 @@
 
 import { useChat } from "ai/react";
 import Image from "next/image";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { loadChat, saveChat } from "@/lib/chat-storage";
 
 const TOOL_LABELS: Record<string, string> = {
   "get-workouts": "Fetching workouts…",
@@ -22,8 +23,12 @@ export default function Home() {
   const [password, setPassword] = useState("");
   const [authed, setAuthed] = useState(false);
   const [pwError, setPwError] = useState(false);
+  const [restored, setRestored] = useState(false);
+  const [storageBlocked, setStorageBlocked] = useState(false);
+  const [storageError, setStorageError] = useState<string | null>(null);
+  const [interrupted, setInterrupted] = useState(false);
 
-  const { messages, input, handleInputChange, handleSubmit, isLoading, error } = useChat({
+  const { messages, input, handleInputChange, handleSubmit, isLoading, error, setMessages, setInput } = useChat({
     headers: { "x-app-password": password },
     onError: (e) => { if (e.message.includes("401")) { setAuthed(false); setPwError(true); } },
   });
@@ -31,13 +36,60 @@ export default function Home() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
+    try {
+      const saved = loadChat(window.localStorage);
+      setMessages(saved.messages);
+      setInput(saved.input);
+      setInterrupted(saved.interrupted);
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      setStorageBlocked(true);
+      setStorageError("Your saved chat could not be restored. New chat will clear it. Until then, new messages will not be saved.");
+    }
+    setRestored(true);
+  }, [setMessages, setInput]);
+
+  useEffect(() => {
+    if (!restored || storageBlocked) return;
+    try {
+      saveChat(window.localStorage, { messages, input, interrupted: isLoading || interrupted });
+      setStorageError(null);
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      setStorageError("Your latest chat changes could not be saved in this browser. Keep this page open or copy your messages before leaving.");
+    }
+  }, [restored, storageBlocked, messages, input, isLoading, interrupted]);
+
+  useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!restored || isLoading || !input.trim()) return;
+    setInterrupted(false);
+    void handleSubmit(event);
+  }
+
+  function newChat() {
+    try {
+      saveChat(window.localStorage, { messages: [], input: "", interrupted: false });
+      setMessages([]);
+      setInput("");
+      setInterrupted(false);
+      setStorageBlocked(false);
+      setStorageError(null);
+      inputRef.current?.focus();
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      setStorageError("The saved chat could not be cleared. Allow browser storage and try New chat again.");
+    }
+  }
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
-      handleSubmit(e as unknown as React.FormEvent<HTMLFormElement>);
+      e.currentTarget.form?.requestSubmit();
     }
   };
 
@@ -89,7 +141,7 @@ export default function Home() {
             )}
             <button
               type="submit"
-              disabled={!password}
+              disabled={!password || !restored}
               className="mt-4 w-full rounded-xl bg-brand px-4 py-3 text-sm font-semibold text-ink transition-colors hover:bg-brand-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink disabled:cursor-not-allowed disabled:opacity-40"
             >
               Open Nakama
@@ -121,6 +173,10 @@ export default function Home() {
         <span className="ml-auto hidden rounded-full border border-line bg-canvas px-3 py-1.5 text-xs text-ink-muted sm:inline-flex">
           Hevy + Claude
         </span>
+        <button
+          type="button" onClick={newChat} disabled={isLoading || !restored}
+          className="ml-auto min-h-11 shrink-0 text-sm underline underline-offset-4 disabled:opacity-40 sm:ml-0"
+        >New chat</button>
       </header>
 
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-6 sm:px-6">
@@ -196,9 +252,21 @@ export default function Home() {
           </div>
         )}
 
-        {error && (
+        {error && messages.length > 0 && (
           <p role="alert" className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-center text-sm text-red-700">
             {error.message}
+          </p>
+        )}
+
+        {interrupted && (
+          <p role="status" className="rounded-xl border border-line bg-surface px-4 py-3 text-sm text-ink-muted">
+            The previous response was interrupted. Only chat text was restored; Hevy actions are not retried.
+            Check Hevy before repeating a change.
+          </p>
+        )}
+        {storageError && (
+          <p role="alert" className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            {storageError}
           </p>
         )}
 
@@ -206,7 +274,7 @@ export default function Home() {
       </div>
 
       <footer className="shrink-0 border-t border-line bg-surface px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-4 sm:px-6">
-        <form onSubmit={handleSubmit} className="flex items-end gap-3">
+        <form onSubmit={submit} className="flex items-end gap-3">
           <label htmlFor="chat-input" className="sr-only">Message your training companion</label>
           <textarea
             id="chat-input"
@@ -216,20 +284,23 @@ export default function Home() {
             onKeyDown={onKeyDown}
             placeholder="Ask your training companion…"
             rows={1}
-            disabled={isLoading}
+            disabled={isLoading || !restored}
             className="min-w-0 flex-1 resize-none rounded-xl border border-line bg-canvas px-4 py-3 text-base leading-6 text-ink transition-colors placeholder:text-ink-muted focus:border-ink/40 focus:outline-none focus:ring-2 focus:ring-brand/30 disabled:opacity-50"
             style={{ minHeight: "48px", maxHeight: "120px" }}
           />
           <button
             type="submit"
             aria-label="Send message"
-            disabled={isLoading || !input.trim()}
+            disabled={isLoading || !restored || !input.trim()}
             className="flex h-[50px] w-12 shrink-0 items-center justify-center rounded-xl bg-brand text-xl font-semibold text-ink transition-colors hover:bg-brand-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink disabled:cursor-not-allowed disabled:opacity-40"
           >
             ↑
           </button>
         </form>
         <p className="mt-3 text-center text-xs text-ink-muted">Enter to send · Shift+Enter for a new line</p>
+        <p className="mt-2 text-center text-xs text-ink-muted">
+          Chat text and drafts are saved on this browser, not to an account. On a shared device, use New chat to clear them.
+        </p>
       </footer>
     </main>
   );

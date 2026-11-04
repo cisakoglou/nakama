@@ -77,8 +77,25 @@ npm run dev
 Open <http://localhost:3002>. The web app always uses Claude Haiku 4.5
 (`claude-haiku-4-5-20251001`); it does not route requests between models.
 
-Run the API regression tests from `web` with `npm test`. The tests mock Hevy
-and AI streaming; they do not send provider requests or require API keys.
+Run the API and chat recovery regression tests from `web` with `npm test`.
+The tests mock Hevy and AI streaming; they do not send provider requests
+or require API keys.
+
+### Current chat recovery
+
+The web app saves the current conversation's text and unsent draft in this
+browser's local storage. Reloading or reopening the same site in the same
+browser restores them after you enter the app password again. The password
+is never saved. New chat clears the saved conversation and draft.
+
+This is device-local recovery, not account-based history or cross-device sync.
+Anyone using the same browser profile can access the stored text; clear it on
+shared devices. Browser storage limits, private browsing, or clearing site data
+can prevent recovery; storage failures are shown in the chat.
+
+Only message text is restored, not raw tool results or tool calls. Interrupted
+responses are marked and never automatically resumed or retried. Check Hevy
+before repeating a routine or workout change that may already have completed.
 
 ## Configuration and deployment
 
