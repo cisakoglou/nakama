@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "AI personal trainer powered by Hevy workout data",
   "type": "module",
+  "engines": {
+    "node": "22.x"
+  },
   "scripts": {
     "setup": "tsx src/setup.ts",
     "start": "tsx src/index.ts",
@@ -11,7 +14,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.52.0",
-    "@modelcontextprotocol/sdk": "^1.10.2",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "dotenv": "^16.4.5",
     "openai": "^4.77.0"
   },
