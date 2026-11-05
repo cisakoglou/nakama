@@ -94,7 +94,7 @@ export async function loadHevyConnection(userId: string) {
   const { data, error } = await storage().from("hevy_connections")
     .select("encrypted_key, revision").eq("user_id", userId).maybeSingle();
   if (error) throw storageFailure(error.code);
-  if (!data) throw new HevyConnectionError(409, "Connect your own Hevy account before starting coaching.");
+  if (!data) throw new HevyConnectionError(409, "Connect your own Hevy account before talking with your Nakama.");
   return { apiKey: decryptHevyKey(userId, data.encrypted_key), revision: data.revision };
 }
 

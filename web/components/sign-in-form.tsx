@@ -53,7 +53,7 @@ export function SignInForm({ message, onRefresh }: { message?: string; onRefresh
   return (
     <>
       <p className="text-xs font-semibold uppercase tracking-[0.16em] text-ink-muted">Your training companion</p>
-      <h1 className="mt-3 text-3xl font-semibold tracking-tight">Welcome to Nakama</h1>
+      <h1 className="mt-3 text-3xl font-semibold tracking-tight">Show up. Get stronger.</h1>
       <p className="mt-3 text-sm leading-6 text-ink-muted">
         Use the email on your beta invitation. Your Nakama account is separate from your Hevy login.
       </p>
@@ -93,7 +93,7 @@ export function SignInForm({ message, onRefresh }: { message?: string; onRefresh
       )}
       {error && <p role="alert" className="mt-4 text-sm text-red-700">{error}</p>}
       <p className="mt-6 text-xs leading-5 text-ink-muted">
-        No Hevy password is requested. After signing in, connect your own Hevy Pro API key to start coaching.
+        No Hevy password is requested. After signing in, connect your own Hevy Pro API key to meet your Nakama.
       </p>
     </>
   );

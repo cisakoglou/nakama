@@ -2,6 +2,7 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import { convertToModelMessages, jsonSchema, stepCountIs, streamText, tool, validateUIMessages } from "ai";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { randomUUID } from "node:crypto";
 import { requireBetaUser } from "@/lib/auth";
 import { loadHevyConnection, HevyConnectionError } from "@/lib/hevy-connection";
 import { connectionSchema } from "@/lib/hevy-types";
@@ -10,6 +11,9 @@ import { coachingPrompt } from "@/lib/coaching";
 import { createUserMcp } from "@/lib/user-mcp";
 import { registerChat } from "@/lib/chat-lifecycle";
 import { getAppOrigin } from "@/lib/app-origin";
+import { ConversationError, conversationStore } from "@/lib/conversations";
+import { savedMessages } from "@/lib/conversation-types";
+import { conversationWriter } from "@/lib/conversation-stream";
 
 export const maxDuration = 120;
 export const runtime = "nodejs";
@@ -21,6 +25,9 @@ const allowedTools = new Set([
 ]);
 const writes = new Set(["create-routine", "update-routine", "create-workout"]);
 const inputSchema = z.object({
+  conversationId: z.string().uuid(),
+  revision: z.number().int().nonnegative(),
+  draftVersion: z.number().int().nonnegative(),
   messages: z.array(z.object({
     id: z.string().min(1).max(128),
     role: z.enum(["user", "assistant"]),
@@ -35,7 +42,7 @@ export async function POST(request: NextRequest) {
   const access = await requireBetaUser(request);
   if (!access.ok) return access.response;
   if (!process.env.ANTHROPIC_API_KEY) {
-    return access.session.json({ error: "Coaching is not configured. Please contact the beta owner." }, 503);
+    return access.session.json({ error: "Nakama is not configured. Please contact the beta owner." }, 503);
   }
   const text = await request.text();
   if (Buffer.byteLength(text) > 128 * 1024) {
@@ -50,6 +57,9 @@ export async function POST(request: NextRequest) {
   }
   const parsed = inputSchema.safeParse(body);
   if (!parsed.success) return access.session.json({ error: "Send a valid conversation of at most 40 messages." }, 400);
+  if (parsed.data.messages.length === 40 && parsed.data.messages.at(-1)?.role === "user") {
+    return access.session.json({ error: "This conversation is full. Start a new chat." }, 413);
+  }
   const { data: profile, error } = await access.session.client.from("profiles")
     .select("*").eq("user_id", access.user.id).maybeSingle();
   if (error) {
@@ -61,14 +71,23 @@ export async function POST(request: NextRequest) {
 
   let release = () => {};
   let closeMcp = async () => {};
+  let history: ReturnType<typeof conversationWriter> | undefined;
   try {
     const connection = await loadHevyConnection(access.user.id);
+    const store = conversationStore(access.session.client, access.user.id);
+    const conversation = await store.load(parsed.data.conversationId);
     const active = registerChat(access.user.id);
     release = active.release;
     const signal = AbortSignal.any([request.signal, active.controller.signal, AbortSignal.timeout(120_000)]);
     const mcp = await createUserMcp(connection.apiKey, signal);
     closeMcp = mcp.close;
-    async function close() { await mcp.close(); active.release(); }
+    let closing: Promise<void> | undefined;
+    function close() {
+      return closing ??= (async () => {
+        try { await mcp.close(); } finally { active.release(); }
+      })();
+    }
+    closeMcp = close;
     const tools = Object.fromEntries(mcp.tools.filter((entry) => allowedTools.has(entry.name)).map((entry) => [
       entry.name,
       tool<unknown, unknown>({
@@ -99,16 +118,35 @@ export async function POST(request: NextRequest) {
       await close();
       return access.session.json({ error: "This conversation is invalid. Start a new chat." }, 400);
     }
+    const runId = randomUUID();
+    const transcript = savedMessages(messages);
+    const claimed = await store.claim(
+      conversation, transcript, parsed.data.revision, parsed.data.draftVersion, runId,
+      messages.at(-1)?.role === "user",
+    );
+    const lastMessage = messages.at(-1);
+    const assistantId = lastMessage?.role === "assistant" ? lastMessage.id : randomUUID();
+    const writer = conversationWriter(store, conversation.id, runId, transcript, assistantId);
+    history = writer;
+    let failed = false;
     const result = streamText({
       model: createAnthropic({ apiKey: process.env.ANTHROPIC_API_KEY })("claude-haiku-4-5-20251001"),
       system: coachingPrompt(preferences.data),
       messages: await convertToModelMessages(messages),
       tools, stopWhen: stepCountIs(8), maxOutputTokens: 1500, abortSignal: signal,
+      onChunk: async ({ chunk }) => {
+        if (chunk.type === "text-delta") await writer.append(chunk.text);
+      },
       onFinish: close, onAbort: close,
-      onError: async () => { console.error("Coaching stream failed"); await close(); },
+      onError: async () => { failed = true; console.error("Coaching stream failed"); await close(); },
     });
     const response = result.toUIMessageStreamResponse({
-      onError: () => "Coaching stopped. Check your Hevy connection and try again; do not repeat an uncertain write.",
+      originalMessages: messages,
+      generateMessageId: () => assistantId,
+      onFinish: async ({ messages: finishedMessages, isAborted }) => {
+        await writer.finish(finishedMessages, failed || isAborted || signal.aborted);
+      },
+      onError: () => "Your Nakama or chat saving stopped. Reopen this chat and check Hevy before continuing; do not repeat an uncertain write.",
     });
     if (!response.body) { await close(); throw new Error("Coaching stream body is missing"); }
     const reader = response.body.getReader();
@@ -116,20 +154,31 @@ export async function POST(request: NextRequest) {
       async pull(controller) {
         try {
           const next = await reader.read();
-          if (next.done) { await close(); controller.close(); }
+          if (next.done) {
+            await writer.finish(undefined, failed || signal.aborted);
+            await close();
+            controller.close();
+          }
           else controller.enqueue(next.value);
-        } catch (error) { await close(); controller.error(error); }
+        } catch (error) {
+          try { await writer.finish(undefined, true); } finally { await close(); controller.error(error); }
+        }
       },
       async cancel() {
         active.controller.abort();
-        try { await reader.cancel(); } finally { await close(); }
+        try { await reader.cancel(); } finally {
+          try { await writer.finish(undefined, true); } finally { await close(); }
+        }
       },
     });
-    return access.session.respond(new Response(stream, { headers: response.headers }));
+    const headers = new Headers(response.headers);
+    headers.set("X-Chat-Revision", String(claimed.revision));
+    headers.set("X-Chat-Draft-Version", String(claimed.draft_version));
+    return access.session.respond(new Response(stream, { headers }));
   } catch (error) {
-    await closeMcp();
-    release();
-    if (!(error instanceof HevyConnectionError)) throw error;
+    try { await history?.finish(undefined, true); }
+    finally { await closeMcp(); release(); }
+    if (!(error instanceof HevyConnectionError) && !(error instanceof ConversationError)) throw error;
     return access.session.json({ error: error.message }, error.status);
   }
 }

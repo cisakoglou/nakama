@@ -32,12 +32,18 @@ Google or an email link, save their own training preferences, and connect
 their own Hevy Pro API key. Sign-in methods require provider configuration.
 Each coaching request uses only that account's preferences and Hevy connection,
 with no fallback to the owner's credentials or `TRAINER.md`.
+Conversations and drafts are saved privately to each account. The Chats picker
+can reopen, rename, or delete earlier conversations across devices.
 
 The isolated preview target is
 <https://nakama-preview-preview.up.railway.app>. The live Railway app above
 still runs the previous single-user version; deploying the preview must not
-replace it. Real hosted sign-in and coaching must be verified before inviting
-testers. Google and external email delivery still need configuration.
+replace it. Production has browser-local current-chat recovery, not accounts
+or server-side history. The owner has verified invited-email sign-in,
+preferences, Hevy connection, and read-only coaching on preview. The new
+conversation migration and saved-history app are now deployed to preview.
+A signed-in, real-data history walkthrough is still required before promotion
+to production. Google and external email delivery still need verification.
 
 ## Coaching capabilities
 
@@ -102,6 +108,8 @@ Run `npm test` and `npm run build` from `web`. Tests cover session and invitatio
 gates, profile validation, cookies, sign-in callbacks, encrypted credentials,
 two-user coaching isolation, tool approvals, cancellation, and actual PostgreSQL
 row-level-security policies using an isolated in-memory PGlite database.
+They also cover owned conversations, optimistic concurrency, draft recovery,
+stream checkpoints, and cancellation without replaying Hevy actions.
 They do not contact Supabase, Hevy, or Anthropic.
 
 ## Supabase setup
@@ -113,6 +121,10 @@ They do not contact Supabase, Hevy, or Anthropic.
    [`supabase/migrations/202610180002_hevy_connections.sql`](supabase/migrations/202610180002_hevy_connections.sql)
    once to create server-only encrypted credential storage and an
    invitation-aware connection-status function.
+   Then run
+   [`supabase/migrations/202611040001_chat_conversations.sql`](supabase/migrations/202611040001_chat_conversations.sql)
+   once, before deploying chat history. It adds private conversations and
+   account-deletion cascading without changing existing profiles or credentials.
 2. Add each approved email through the SQL Editor, replacing the example:
 
    ```sql
@@ -151,6 +163,12 @@ They do not contact Supabase, Hevy, or Anthropic.
    first setup, save/reload, Hevy connection, read-only coaching, disconnect,
    sign-out, and rejection of an uninvited account against the real project.
    Do not perform real Hevy writes without explicit user approval.
+   For history, create two chats, send read-only prompts, switch between them,
+   reload, visit Settings and return, and reopen from another device. Verify
+   the draft and continued context, rename a chat, and confirm deletion.
+   Interrupt a response and reopen it: partial text should return with a
+   warning, and no Hevy action should run automatically. Check two invited
+   accounts cannot see or change each other's history.
 
 Google/email sign-in creates a **Nakama** account, not a Hevy connection.
 Both methods must use an invited email, which does not have to match the
@@ -170,7 +188,31 @@ linked to the authenticated user ID. The owner also maintains the invitation
 email list. `public.hevy_connections` stores each user's API key encrypted with
 AES-256-GCM, bound to that user's ID. Only the server's Supabase role can read
 or change that table; browsers receive connection metadata, never saved keys.
-This version saves no chat history, workout copies, or Hevy passwords.
+`public.chat_conversations` stores each account's conversation titles, text,
+unsent drafts, activity timestamps, and stream/version metadata. Database
+policies require both ownership and an active invitation for every operation.
+It saves no raw tool results, executable tool/approval state, or Hevy passwords.
+Workout information mentioned in a conversation is retained as chat text.
+
+Each conversation holds at most 40 text messages, stored as a bounded JSON
+transcript in its row. The picker loads history in pages of 20. The server
+saves a submitted prompt before generation, checkpoints response text during
+streaming, and finalizes on completion or cancellation. A crashed worker's
+stream lease expires after 150 seconds; the next open marks it interrupted
+without resuming it. The final uncheckpointed fragment can be lost on a crash.
+Concurrent response attempts and stale draft saves are rejected rather than
+overwriting another device's changes. Reopen a changed chat to load its latest
+text; use the saved-draft action to resolve a draft conflict.
+
+The browser remembers the selected chat and caches unsent drafts under keys
+scoped to the account and conversation. Account draft autosaving runs after
+500 ms of inactivity; a local recovery copy covers the interval before that
+save. These local drafts are not encrypted, can remain after sign-out, and
+are accessible to anyone using that browser profile. No passwords, provider
+keys, or full conversation transcripts are placed in browser storage by this
+account flow. Browser storage failures are displayed; account saving can
+still work without browser storage. The production prototype's browser-local
+chat is not automatically imported into an account.
 
 Coaching sends the conversation, preferences, and requested workout context
 to Anthropic. The Hevy key is passed only to Hevy for validation and to a
@@ -184,9 +226,13 @@ or rotate keys in Hevy developer settings to invalidate them elsewhere.
 Database backups can retain older encrypted rows according to the project's
 backup retention; deletion of the current row is not immediate backup erasure.
 
-There is no self-service account deletion or automatic retention policy yet.
+Chats are retained until their owner deletes them or their account is removed;
+there is no automatic expiry. Chat deletion removes the active database row
+and its draft on this browser, but not copies in backups or other devices'
+local draft caches. Backup copies follow the project's backup retention.
+There is no self-service account deletion yet.
 The owner can remove an account through Supabase Auth; its profile is deleted
-along with its saved Hevy connection by database foreign keys. Remove its invitation separately if it should
+along with its saved Hevy connection and conversations by database foreign keys. Remove its invitation separately if it should
 not be able to sign up again. Define the beta privacy notice, contact, and
 deletion process before bringing in testers. The old `TRAINER.md` and CLI
 remain in the repository but are not used by the account web flow.
@@ -277,5 +323,7 @@ colors defined in `web/tailwind.config.ts`.
 - `web/lib/hevy-connection.ts`: server-only encryption and owner-scoped storage.
 - `web/lib/user-mcp.ts`: isolated local MCP process with telemetry disabled.
 - `web/app/api/chat/route.ts`: authenticated private coaching and write approvals.
+- `web/app/api/conversations/`: owner-scoped chat history, drafts, rename, and deletion.
+- `web/lib/conversations.ts`, `web/lib/conversation-stream.ts`: versioned storage and response checkpoints.
 - `web/lib/mcp.ts`, `web/lib/system-prompt.ts`, `src/`: legacy Hevy integration,
   coaching instructions, and alternative command-line clients.

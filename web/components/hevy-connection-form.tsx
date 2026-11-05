@@ -57,8 +57,8 @@ export function HevyConnectionForm({ connection, onChanged }: {
         and copy your API key. Your Hevy email can differ from your Nakama email.
       </p>
       <p className="mt-3 text-sm leading-6 text-ink-muted">
-        Nakama uses your workouts and saved preferences to coach you through Anthropic.
-        Your key is encrypted on the server and is never included in the coaching prompt.
+        Your Nakama uses your workouts and saved preferences to give you grounded guidance through Anthropic.
+        Your key is encrypted on the server and is never included in the conversation prompt.
         Creating or changing Hevy records requires your approval in chat.
       </p>
       <form onSubmit={connect} className="mt-4">
@@ -74,7 +74,7 @@ export function HevyConnectionForm({ connection, onChanged }: {
         <button
           type="submit" disabled={busy || !apiKey.trim()}
           className="mt-4 w-full rounded-xl bg-brand px-4 py-3 text-sm font-semibold hover:bg-brand-hover disabled:opacity-50"
-        >{busy ? "Please wait..." : connection.connected ? "Replace connection" : "Connect Hevy and start coaching"}</button>
+        >{busy ? "Please wait..." : connection.connected ? "Replace connection" : "Connect Hevy and continue"}</button>
       </form>
       {connection.connected && (
         <button type="button" onClick={disconnect} disabled={busy} className="mt-3 min-h-11 text-sm underline underline-offset-4">

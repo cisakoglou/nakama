@@ -6,17 +6,17 @@ export default {
     extend: {
       colors: {
         brand: {
-          DEFAULT: "#e4be35",
-          hover: "#d5ae24",
-          soft: "#faf1cf",
+          DEFAULT: "#f0a35f",
+          hover: "#f5b67c",
+          soft: "#4a2f24",
         },
         ink: {
-          DEFAULT: "#34342d",
-          muted: "#6b6b60",
+          DEFAULT: "#f7f1e8",
+          muted: "#b9aa9c",
         },
-        canvas: "#f7f5ef",
-        surface: "#fffefa",
-        line: "#e5e2d7",
+        canvas: "#18120f",
+        surface: "#211914",
+        line: "#49382e",
       },
     },
   },

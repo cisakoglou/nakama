@@ -2,10 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { POST } from "./route";
 import { HevyConnectionError } from "@/lib/hevy-connection";
+import { ConversationError } from "@/lib/conversations";
+import { MockLanguageModelV3 } from "ai/test";
 
 const mocks = vi.hoisted(() => ({
   auth: vi.fn(), load: vi.fn(), mcp: vi.fn(), stream: vi.fn(), rpc: vi.fn(),
   from: vi.fn(), select: vi.fn(), eq: vi.fn(), profile: vi.fn(),
+  conversations: vi.fn(), chat: vi.fn(), claim: vi.fn(), checkpoint: vi.fn(),
 }));
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/auth", () => ({ requireBetaUser: mocks.auth }));
@@ -15,11 +18,17 @@ vi.mock("@/lib/hevy-connection", async (original) => ({
   loadHevyConnection: mocks.load,
 }));
 vi.mock("ai", async (original) => ({ ...await original<typeof import("ai")>(), streamText: mocks.stream }));
+vi.mock("@/lib/conversations", async (original) => ({
+  ...await original<typeof import("@/lib/conversations")>(), conversationStore: mocks.conversations,
+}));
 
 const first = "00000000-0000-4000-8000-000000000001";
 const second = "00000000-0000-4000-8000-000000000002";
 const query = { select: mocks.select, eq: mocks.eq, maybeSingle: mocks.profile };
-const input = { messages: [{ id: "msg-1", role: "user", parts: [{ type: "text", text: "How is my training progressing?" }] }] };
+const input = {
+  conversationId: first, revision: 0, draftVersion: 0,
+  messages: [{ id: "msg-1", role: "user", parts: [{ type: "text", text: "How is my training progressing?" }] }],
+};
 let owner: string;
 let clients: Array<{ client: { callTool: ReturnType<typeof vi.fn> }; close: ReturnType<typeof vi.fn> }>;
 
@@ -56,6 +65,14 @@ beforeEach(() => {
   mocks.rpc.mockImplementation(async () => ({
     data: { connected: true, revision: owner, connected_at: "2026-10-18T00:00:00Z" }, error: null,
   }));
+  mocks.conversations.mockReturnValue({ load: mocks.chat, claim: mocks.claim, checkpoint: mocks.checkpoint });
+  mocks.chat.mockImplementation(async () => ({
+    id: first, user_id: owner, title: "New chat", messages: [], draft: "", draft_version: 0,
+    revision: 0, status: "ready", run_id: null, run_expires_at: null,
+    created_at: "2026-10-18T00:00:00Z", updated_at: "2026-10-18T00:00:00Z",
+  }));
+  mocks.claim.mockResolvedValue({ revision: 1, draft_version: 1 });
+  mocks.checkpoint.mockResolvedValue(undefined);
   mocks.mcp.mockImplementation(async () => {
     const mcp = {
       client: { callTool: vi.fn().mockResolvedValue({ content: [{ type: "text", text: "private workout result" }] }) },
@@ -82,6 +99,7 @@ it("isolates two users' keys, MCP clients, and preference prompts", async () => 
   const twoOptions = mocks.stream.mock.calls[1][0];
   await two.text();
   expect(mocks.load.mock.calls.map((call) => call[0])).toEqual([first, second]);
+  expect(mocks.conversations.mock.calls.map((call) => call[1])).toEqual([first, second]);
   expect(mocks.mcp.mock.calls.map((call) => call[0])).toEqual([`private-${first}`, `private-${second}`]);
   expect(clients[0]).not.toBe(clients[1]);
   expect(oneOptions.system).toContain("Goal: Build strength");
@@ -151,3 +169,101 @@ it("cleans up initialization failures so the user can retry", async () => {
   expect(retry.status).toBe(200);
   await retry.text();
 });
+
+it("saves the user message before starting a provider and returns the claimed versions", async () => {
+  const response = await POST(request());
+  expect(mocks.claim).toHaveBeenCalledWith(
+    expect.objectContaining({ user_id: first }),
+    [{ id: "msg-1", role: "user", content: "How is my training progressing?" }],
+    0, 0, expect.any(String), true,
+  );
+  expect(mocks.claim.mock.invocationCallOrder[0]).toBeLessThan(mocks.stream.mock.invocationCallOrder[0]);
+  expect(response.headers.get("X-Chat-Revision")).toBe("1");
+  expect(response.headers.get("X-Chat-Draft-Version")).toBe("1");
+  await response.text();
+});
+
+it("refuses a missing or foreign chat before launching MCP or the provider", async () => {
+  mocks.chat.mockRejectedValue(new ConversationError(404, "This chat was not found."));
+  expect((await POST(request())).status).toBe(404);
+  expect(mocks.mcp).not.toHaveBeenCalled();
+  expect(mocks.stream).not.toHaveBeenCalled();
+});
+
+it("refuses a stale conversation before generating another response", async () => {
+  mocks.claim.mockRejectedValue(new ConversationError(409, "Chat changed"));
+  expect((await POST(request())).status).toBe(409);
+  expect(mocks.stream).not.toHaveBeenCalled();
+  expect(clients[0].close).toHaveBeenCalled();
+});
+
+it("marks cancelled transcripts interrupted instead of retrying them", async () => {
+  const response = await POST(request());
+  await response.body?.cancel();
+  expect(mocks.checkpoint).toHaveBeenLastCalledWith(first, expect.any(String),
+    [{ id: "msg-1", role: "user", content: "How is my training progressing?" }], "interrupted");
+});
+
+it("persists the real SDK's streamed response using the same message ID sent to the browser", async () => {
+  await useActualStream();
+  const response = await POST(request());
+  const stream = await response.text();
+  const finished = mocks.checkpoint.mock.calls.at(-1);
+  expect(finished?.[3]).toBe("ready");
+  const assistant = finished?.[2].at(-1);
+  expect(assistant).toEqual({ id: expect.any(String), role: "assistant", content: "Try one more rep." });
+  expect(stream).toContain(assistant.id);
+  expect(mocks.checkpoint.mock.calls.some((call) => call[3] === "streaming")).toBe(true);
+});
+
+it("saves partial text as interrupted when the real SDK's request is aborted", async () => {
+  await useActualStream(50);
+  const abort = new AbortController();
+  const response = await POST(new NextRequest(request(), { signal: abort.signal }));
+  if (!response.body) throw new Error("Missing coaching response stream");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  while (!text.includes("Try one more rep.")) {
+    const chunk = await reader.read();
+    if (chunk.done) throw new Error("The stream ended before the partial response.");
+    text += decoder.decode(chunk.value);
+  }
+  abort.abort();
+  while (!(await reader.read()).done) { /* Drain the abort notification. */ }
+  expect(mocks.checkpoint.mock.calls.at(-1)?.[3]).toBe("interrupted");
+  expect(mocks.checkpoint.mock.calls.at(-1)?.[2].at(-1).content).toBe("Try one more rep.");
+  expect(clients[0].close).toHaveBeenCalled();
+});
+
+it("fails the response stream explicitly when the final database save fails", async () => {
+  await useActualStream();
+  mocks.checkpoint.mockImplementation(async (_id, _runId, _messages, status) => {
+    if (status === "ready") throw new ConversationError(503, "Database save failed");
+  });
+  const response = await POST(request());
+  await expect(response.text()).rejects.toThrow("Database save failed");
+  expect(clients[0].close).toHaveBeenCalled();
+});
+
+async function useActualStream(chunkDelayInMs: number | null = null) {
+  const actual = await vi.importActual<typeof import("ai")>("ai");
+  const model = new MockLanguageModelV3({
+    doStream: {
+      stream: actual.simulateReadableStream({ chunks: [
+        { type: "stream-start", warnings: [] },
+        { type: "text-start", id: "text" },
+        { type: "text-delta", id: "text", delta: "Try one more rep." },
+        { type: "text-end", id: "text" },
+        {
+          type: "finish", finishReason: { unified: "stop", raw: "stop" },
+          usage: {
+            inputTokens: { total: 2, noCache: 2, cacheRead: undefined, cacheWrite: undefined },
+            outputTokens: { total: 4, text: 4, reasoning: undefined },
+          },
+        },
+      ], initialDelayInMs: null, chunkDelayInMs }),
+    },
+  });
+  mocks.stream.mockImplementation((options) => actual.streamText({ ...options, model }));
+}

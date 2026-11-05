@@ -1,8 +1,15 @@
 import type { Profile, ProfileInput } from "@/lib/profile";
+import type { Conversation } from "@/lib/conversation-types";
 
 export type Database = {
   public: {
     Tables: {
+      chat_conversations: {
+        Row: Conversation;
+        Insert: { user_id: string; title?: string };
+        Update: Partial<Omit<Conversation, "id" | "user_id" | "created_at">>;
+        Relationships: [];
+      };
       profiles: {
         Row: Profile;
         Insert: ProfileInput & {

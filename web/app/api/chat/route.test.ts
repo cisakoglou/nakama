@@ -160,6 +160,7 @@ describe("private API authentication", () => {
 
   it("keeps coaching disconnected for an invited account", async () => {
     const response = await POST(request("chat", JSON.stringify({
+      conversationId: user.id, revision: 0, draftVersion: 0,
       messages: [{ id: "one", role: "user", parts: [{ type: "text", text: "Hello" }] }],
     })));
     expect(response.status).toBe(409);

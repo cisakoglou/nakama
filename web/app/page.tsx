@@ -1,7 +1,8 @@
 "use client";
 
-import Image from "next/image";
 import { useEffect, useState } from "react";
+import { BrandLockup } from "@/components/brand-lockup";
+import { TrainingLoader } from "@/components/training-loader";
 import { SignInForm } from "@/components/sign-in-form";
 import { ProfileForm } from "@/components/profile-form";
 import { HevyConnectionForm } from "@/components/hevy-connection-form";
@@ -25,6 +26,7 @@ export default function Home() {
   const [signingOut, setSigningOut] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const activeUserId = screen.kind === "account" ? screen.account.user.id : null;
 
   function reloadAccount() {
     setScreen({ kind: "loading" });
@@ -73,12 +75,12 @@ export default function Home() {
 
   useEffect(() => {
     if (screen.kind === "loading" || screen.kind === "error") return;
-    const { data } = createClient().auth.onAuthStateChange((event) => {
+    const { data } = createClient().auth.onAuthStateChange((event, session) => {
       if (event === "SIGNED_OUT") setScreen({ kind: "sign-in" });
-      if (event === "SIGNED_IN") reloadAccount();
+      if (event === "SIGNED_IN" && session?.user.id !== activeUserId) reloadAccount();
     });
     return () => data.subscription.unsubscribe();
-  }, [screen.kind]);
+  }, [screen.kind, activeUserId]);
 
   async function signOut() {
     setSigningOut(true);
@@ -100,18 +102,16 @@ export default function Home() {
       key={`${screen.account.user.id}:${screen.account.connection.revision}:${screen.account.profile.updated_at}`}
       onSettings={() => setShowSettings(true)} onSignOut={() => { void signOut(); }}
       signingOut={signingOut} accountError={actionError}
+      userId={screen.account.user.id}
     />;
   }
 
   return (
-    <main className="flex min-h-dvh items-center justify-center px-5 py-10">
+    <main className="account-shell flex min-h-dvh items-center justify-center px-5 py-10">
       <div className="w-full max-w-lg">
-        <Image
-          src="/brand/nakama-wordmark.webp" alt="Nakama" width={900} height={180}
-          sizes="288px" priority className="mx-auto mb-9 h-auto w-72 max-w-full"
-        />
-        <section className="rounded-3xl border border-line bg-surface p-6 shadow-[0_20px_60px_-25px_rgba(52,52,45,0.22)] sm:p-8">
-          {screen.kind === "loading" && <p role="status">Loading your training space...</p>}
+        <BrandLockup className="account-brand mx-auto mb-9" />
+        <section className="account-card rounded-3xl border border-line bg-surface p-6 shadow-[0_20px_60px_-25px_rgba(52,52,45,0.22)] sm:p-8">
+          {screen.kind === "loading" && <TrainingLoader />}
           {screen.kind === "sign-in" && <SignInForm message={screen.message} onRefresh={reloadAccount} />}
           {screen.kind === "error" && (
             <>
@@ -153,7 +153,7 @@ export default function Home() {
                   {screen.account.connection.connected && <button
                     onClick={() => setShowSettings(false)}
                     className="ml-4 mt-5 min-h-11 text-sm underline underline-offset-4"
-                  >Back to coaching</button>}
+                  >Back to your Nakama</button>}
                   <HevyConnectionForm connection={screen.account.connection} onChanged={reloadAccount} />
                 </>
               )}

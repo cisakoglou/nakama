@@ -4,7 +4,7 @@ const active = new Map<string, Set<AbortController>>();
 
 export function registerChat(userId: string) {
   if (active.has(userId) || active.size >= 20) {
-    throw new HevyConnectionError(429, "Coaching is busy. Finish your current response or try again shortly.");
+    throw new HevyConnectionError(429, "Your Nakama is already responding. Let it finish or try again shortly.");
   }
   const controller = new AbortController();
   const sessions = new Set([controller]);
