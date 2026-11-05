@@ -1,7 +1,7 @@
 # Nakama
 
 <p align="center">
-  <img src="img/nakama-wordmark-readme.png" alt="Nakama wordmark" width="480">
+  <img src="web/app/icon.png" alt="Nakama chain logo" width="160" height="160">
 </p>
 
 **Your training companion, grounded in your workouts.**
@@ -25,7 +25,7 @@ that helps you make sense of your workouts and take the next step. The goal is
 not another place to log sets, but a useful conversation about the training
 you already do.
 
-## Current status
+## Current status (2026-11-05)
 
 **This version supports invite-only, per-user coaching.** Users sign in with
 Google or an email link, save their own training preferences, and connect
@@ -35,18 +35,26 @@ with no fallback to the owner's credentials or `TRAINER.md`.
 Conversations and drafts are saved privately to each account. The Chats picker
 can reopen, rename, or delete earlier conversations across devices.
 
-The production target is
-<https://nakama-production-60d5.up.railway.app>; the isolated preview target is
-<https://nakama-preview-preview.up.railway.app>. This release promotes the
-account-based app, saved history, and preview UI to production, replacing the
-shared-password prototype. Both environments use the same Supabase project:
-accounts, invitations, preferences, Hevy connections, and chats are shared.
-Preview is therefore not a separate test-data sandbox.
+The account-based release, saved history, and refreshed UI are merged into
+`main`, replacing the shared-password prototype. Authentication
+([#1](https://github.com/cisakoglou/nakama/issues/1)), mobile layout
+([#3](https://github.com/cisakoglou/nakama/issues/3)), and invite-only account
+implementation ([#9](https://github.com/cisakoglou/nakama/issues/9)) are complete.
+Hosted and real-phone acceptance checks remain in
+[#12](https://github.com/cisakoglou/nakama/issues/12); implementation completion
+does not mean the external beta is ready.
+
+Production is <https://nakama-production-60d5.up.railway.app>; preview is
+<https://nakama-preview-preview.up.railway.app>. **Both environments share the
+same Supabase project**, including accounts, invitations, preferences, Hevy
+connections, and chats. Preview is not an isolated test-data sandbox.
+
 The owner has verified invited-email sign-in, preferences, Hevy connection,
-and read-only coaching on preview. Google is enabled in Supabase; a signed-in
-production walkthrough is still required after deployment. External email
-delivery still requires custom SMTP. The prototype's browser-local chat is
-not automatically imported into account history.
+and read-only coaching on preview. Anonymous chat requests returned `401` on
+both hosts on 2026-11-05. Google is enabled in Supabase, but signed-in production,
+saved-history, two-account, and real-phone walkthroughs still need completion.
+External email delivery requires custom SMTP. The prototype's browser-local
+chat is not automatically imported into account history.
 
 ## Coaching capabilities
 
@@ -55,6 +63,9 @@ not automatically imported into account history.
 - Create or update Hevy routines without manually looking up exercise IDs.
 - Personalize coaching with your private, saved training preferences.
 - Approve or decline proposed Hevy changes before they execute.
+- Reopen, rename, or delete saved chats and recover account-saved drafts.
+- Read formatted coaching responses with collapsible tool activity and
+  interrupted-response recovery that does not automatically replay actions.
 
 For example:
 
@@ -67,9 +78,21 @@ For example:
 ## Product direction
 
 The direction is a mobile-first training companion that turns workout data into
-clear, actionable guidance. The next steps are hosted end-to-end validation,
-per-user usage controls, a privacy/deletion process, and a small invited beta.
-The preview is not a ready-to-announce product; follow the
+clear, actionable guidance. The next milestone is a small, owner-approved
+invite-only beta, not a public launch.
+
+| Remaining work | Tracking |
+| --- | --- |
+| Verify production sign-in, saved chats, two-account isolation, and real-phone behavior; configure external email delivery. | [#12](https://github.com/cisakoglou/nakama/issues/12) |
+| Resolve current dependency advisories or document a reviewed exception before external beta invitations. | [#11](https://github.com/cisakoglou/nakama/issues/11) |
+| Obtain Hevy clarification on hosted use, encrypted key storage, commercial use, rate limits, and partner/OAuth options; test phone onboarding and finalize the beta decision. | [#10](https://github.com/cisakoglou/nakama/issues/10) |
+| Add durable per-user quotas, provider usage/cost accounting, and an owner-controlled stop mechanism. | [#7](https://github.com/cisakoglou/nakama/issues/7) |
+| Finish confirmed account-data deletion, privacy/retention information, and backup/restore procedures; validate hosted connection and isolation behavior. | [#5](https://github.com/cisakoglou/nakama/issues/5), [#6](https://github.com/cisakoglou/nakama/issues/6), [#8](https://github.com/cisakoglou/nakama/issues/8) |
+| Run an observed three-user cohort and record friction, usefulness, and return visits after the release gates pass. | [#8](https://github.com/cisakoglou/nakama/issues/8) |
+| Add a PWA manifest and install icons, then verify standalone launch; optional for the first cohort. | [#2](https://github.com/cisakoglou/nakama/issues/2) |
+
+Existing Anthropic spending limits and request-level guardrails do not replace
+application-level quotas or cross-instance usage accounting. Follow the
 [project board](https://github.com/users/cisakoglou/projects/1) for progress.
 
 ## Run locally
@@ -173,6 +196,10 @@ They do not contact Supabase, Hevy, or Anthropic.
    Interrupt a response and reopen it: partial text should return with a
    warning, and no Hevy action should run automatically. Check two invited
    accounts cannot see or change each other's history.
+   Repeat the hosted acceptance checks on production and record results in
+   [#12](https://github.com/cisakoglou/nakama/issues/12). Preview and production
+   share data: do not delete real account data or perform Hevy writes as
+   incidental testing.
 
 Google/email sign-in creates a **Nakama** account, not a Hevy connection.
 Both methods must use an invited email, which does not have to match the
@@ -236,8 +263,9 @@ and its draft on this browser, but not copies in backups or other devices'
 local draft caches. Backup copies follow the project's backup retention.
 There is no self-service account deletion yet.
 The owner can remove an account through Supabase Auth; its profile is deleted
-along with its saved Hevy connection and conversations by database foreign keys. Remove its invitation separately if it should
-not be able to sign up again. Define the beta privacy notice, contact, and
+along with its saved Hevy connection and conversations by database foreign
+keys. Remove its invitation separately if it should not be able to sign up
+again. Define the beta privacy notice, contact, and
 deletion process before bringing in testers. The old `TRAINER.md` and CLI
 remain in the repository but are not used by the account web flow.
 
@@ -260,13 +288,21 @@ app launches the pinned MCP CLI from that directory at runtime.
 
 Validate changes on preview before promoting them to production. The
 database migrations, active signup hook, provider configuration, and real
-sign-in/profile/Hevy round trip must be verified before rollout. Production
-dependency audits currently report no advisories; build/development
-dependencies still have advisories, including Tailwind 3's dependency chain.
+sign-in/profile/Hevy round trip must be verified before rollout.
+
+**Dependency remediation remains a beta blocker.** On 2026-11-05,
+`npm audit --omit=dev` reported 2 high and 6 moderate entries for `web`, and
+3 high and 1 moderate for the root/legacy CLI dependency tree; neither reported
+critical entries. These are dependency-audit signals, not verified
+exploitability or proof of the deployed lockfile. Track applicable advisory
+review, targeted upgrades, and any explicit exceptions in
+[#11](https://github.com/cisakoglou/nakama/issues/11); do not use
+`npm audit fix --force` as a substitute for reviewing major migrations.
+
 The legacy `APP_PASSWORD` and `HEVY_API_KEY` variables are not used by the
 account app; retain production's old values only if needed for rollback.
-Never commit credentials or local environment
-files, or upload unrelated untracked files in deployment archives.
+Never commit credentials or local environment files, or upload unrelated
+untracked files in deployment archives.
 
 ## Hevy connection decision (2026-10-18)
 
@@ -291,9 +327,9 @@ Before committing to hosted onboarding, resolve these items in
   connection option exists. Public API access alone does not establish this.
 - Confirm rate limits and expected retry behavior. The official documentation
   lists `pavel@hevyapp.com` for API questions. An inquiry was sent on
-  2026-10-18; a response is pending.
+  2026-10-18; no response is recorded in the issue yet.
 - Test key creation and connection on a real phone with an eligible user.
-  This authenticated mobile walkthrough has not yet been performed.
+  This authenticated mobile walkthrough remains unverified.
 
 The provisional beta flow is guided, one-time API-key entry for invited Hevy
 Pro users, subject to those checks. State this requirement before signup and
@@ -301,21 +337,30 @@ do not promise a frictionless connection until it has been tested.
 
 ## Phone access
 
-Open Nakama in Safari on iPhone or Chrome on Android and choose **Add to Home
-Screen** from the browser's share menu or main menu. Chat requires internet.
-Installable PWA support and mobile layout improvements are tracked in
-[issue #2](https://github.com/cisakoglou/nakama/issues/2) and
-[issue #3](https://github.com/cisakoglou/nakama/issues/3).
+Open Nakama in Safari on iPhone or Chrome on Android. The mobile layout
+implementation is complete: dynamic viewport and safe-area handling,
+keyboard-aware chat sizing, and accessible zoom are in place. Real-device
+keyboard, scrolling, tap-target, overflow, and rotation checks remain in
+[#12](https://github.com/cisakoglou/nakama/issues/12).
+
+For a home-screen shortcut, choose **Add to Home Screen** from the browser's
+share menu or main menu where available. A full PWA manifest, install-icon set,
+and verified standalone launch are still tracked in
+[#2](https://github.com/cisakoglou/nakama/issues/2). Chat requires internet;
+offline chat is not supported.
 
 ## Branding
 
 <img src="web/app/apple-icon.png" alt="Nakama chain icon" width="96" height="96">
 
-Original artwork lives in `img/`. The account screens use the Nakama wordmark;
-optimized wordmark and chain-mark versions are in `web/public/brand/`.
+The README and app icons use the current apricot chain mark on a dark espresso
+background. Account screens pair the chain mark with the Nakama name. The UI
+uses dark espresso surfaces, warm ivory text, apricot accents, and sage details,
+with theme colors defined in `web/tailwind.config.ts` and `web/app/globals.css`.
+
 Browser and Apple home-screen icons live in `web/app/icon.png` and
-`web/app/apple-icon.png`. The UI uses warm ivory, charcoal, and gold, with theme
-colors defined in `web/tailwind.config.ts`.
+`web/app/apple-icon.png`. Original artwork and the earlier gold wordmark live
+in `img/`; optimized source artwork remains in `web/public/brand/`.
 
 ## Code
 
