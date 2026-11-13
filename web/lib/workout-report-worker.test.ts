@@ -6,8 +6,10 @@ import {
 } from "./workout-report-worker";
 
 const mocks = vi.hoisted(() => ({
-  load: vi.fn(), generate: vi.fn(), storage: vi.fn(), actual: undefined as undefined | ((...args: never[]) => unknown),
+  load: vi.fn(), generate: vi.fn(), storage: vi.fn(), build: vi.fn(),
+  actual: undefined as undefined | ((...args: never[]) => unknown),
 }));
+vi.mock("@/lib/recovery-context", () => ({ buildRecoveryContext: mocks.build }));
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/hevy-connection", async (original) => ({
   ...await original<typeof import("@/lib/hevy-connection")>(),
@@ -105,6 +107,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   clock = new Date("2026-11-13T12:00:00.000Z");
   mocks.generate.mockImplementation(mocks.actual!);
+  mocks.build.mockImplementation((_start: string, _owner: string, snapshot?: { status: string }) =>
+    snapshot ? { observations: [`recovery ${snapshot.status}`], limitations: [] } : undefined);
   vi.spyOn(console, "error").mockImplementation(() => {});
   vi.stubGlobal("fetch", fetchMock);
   mocks.load.mockResolvedValue({ apiKey: "personal-key", revision });
@@ -209,6 +213,70 @@ describe("workout report worker", () => {
     workoutsById[workoutId] = workout("someone-else", 12, 100);
     expect(await drain(db)).toMatchObject({ failed: 1 });
     expect(db.tables.workout_reports[0]).toMatchObject({ last_error: "invalid_workout" });
+  });
+});
+
+describe("optional recovery context", () => {
+  const snapshot = {
+    userId: owner, provider: "garmin", status: "available", fetchedAt: "2026-11-12T08:30:00.000Z",
+    sleep: {
+      calendarDate: "2026-11-12", startAt: "2026-11-11T23:00:00+01:00", endAt: "2026-11-12T07:00:00+01:00",
+      sleepSeconds: 27_000, windowConfirmed: true,
+    },
+  } as const;
+
+  it("leaves the Hevy report call unchanged when no recovery source is configured", async () => {
+    const db = fakeDb();
+    db.enqueue();
+    expect(await drain(db)).toMatchObject({ delivered: 1 });
+    expect(mocks.build).toHaveBeenCalledWith("2026-11-12T09:00:00Z", owner, undefined);
+    expect(mocks.generate.mock.calls[0]).toHaveLength(3);
+  });
+
+  it("passes the job owner's snapshot into the report", async () => {
+    const db = fakeDb();
+    db.enqueue();
+    const load = vi.fn().mockResolvedValue(snapshot);
+    expect(await drainWorkoutReports(db.client, () => clock, { load })).toMatchObject({ delivered: 1 });
+    expect(load).toHaveBeenCalledWith(owner, expect.objectContaining({ id: workoutId }), expect.any(AbortSignal));
+    expect(mocks.build).toHaveBeenCalledWith("2026-11-12T09:00:00Z", owner, snapshot);
+    expect(mocks.generate.mock.calls[0][3]).toEqual({ observations: ["recovery available"], limitations: [] });
+    const [conversation] = db.tables.chat_conversations as { messages: { content: string }[] }[];
+    expect(conversation.messages[0].content).toContain("recovery available");
+  });
+
+  it("still delivers the report with disclosed unavailable context when the source fails, without logging its error", async () => {
+    const db = fakeDb();
+    db.enqueue();
+    const load = vi.fn().mockRejectedValue(new Error("sleep 4h12m for user"));
+    expect(await drainWorkoutReports(db.client, () => clock, { load })).toMatchObject({ delivered: 1, failed: 0 });
+    expect(mocks.build).toHaveBeenCalledWith("2026-11-12T09:00:00Z", owner, {
+      userId: owner, provider: "garmin", status: "unavailable", fetchedAt: clock.toISOString(),
+    });
+    expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain("4h12m");
+    expect(db.tables.workout_reports[0]).toMatchObject({ status: "delivered", last_error: null });
+  });
+
+  it("aborts a slow source after five seconds and delivers the report", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const db = fakeDb();
+      db.enqueue();
+      let signal: AbortSignal | undefined;
+      const load = vi.fn((_user: string, _workout: unknown, abort: AbortSignal) => {
+        signal = abort;
+        return new Promise<undefined>(() => {});
+      });
+      const result = drainWorkoutReports(db.client, () => clock, { load });
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(db.tables.chat_conversations).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await result).toMatchObject({ delivered: 1 });
+      expect(signal?.aborted).toBe(true);
+      expect(mocks.build.mock.calls[0][2]).toMatchObject({ status: "unavailable" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

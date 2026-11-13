@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   generateWorkoutReport, hevyWorkoutSchema, renderWorkoutReport, type HevyWorkout,
 } from "./workout-report";
+import { buildRecoveryContext, type RecoveryContext } from "./recovery-context";
 
 type Exercise = HevyWorkout["exercises"][number];
 type WorkoutSet = Exercise["sets"][number];
@@ -243,5 +244,55 @@ describe("workout report comparisons", () => {
     expect(rendered).not.toContain("\n# injected");
     report.limitations.push("x".repeat(10000));
     expect(renderWorkoutReport(report).length).toBeLessThanOrEqual(6000);
+  });
+
+  it("keeps ordinary Hevy report bytes unchanged when recovery is disconnected or not consented", () => {
+    const current = workout(10, [strength([10, 10])]);
+    const history = [workout(9, [strength([8, 8])])];
+    const report = generateWorkoutReport(current, history);
+    expect(report).not.toHaveProperty("recovery");
+    const expected = `## Training
+
+Logged 1 exercise and 2 normal working sets.
+
+### What went well
+- Bench press: 20 total reps vs 16 total reps in the previous comparable session (2 matched normal sets at the same logged loads).
+
+### Comparison limits
+- Comparisons use only logged normal sets from up to 5 comparable sessions in the last 90 days; warmup, dropset and failure sets are excluded. Workout-wide totals are not treated as performance changes.
+- Technique, effort, rest, bodyweight and training intent are not established by these metrics; changes are observations, not diagnoses or all-time records.`;
+    expect(renderWorkoutReport(report)).toBe(expected);
+    const absent = buildRecoveryContext(current.start_time, "synthetic-owner");
+    expect(renderWorkoutReport(generateWorkoutReport(current, history, "kg", absent))).toBe(expected);
+  });
+
+  it("adds recovery separately without changing workout achievements or inferring causation", () => {
+    const current = workout(10, [strength([10])]);
+    const history = [workout(9, [strength([8])])];
+    const recovery: RecoveryContext = {
+      observations: ["Garmin-reported sleep: 5 h 30 min."],
+      limitations: ["This does not establish a cause for performance changes."],
+    };
+    const { recovery: included, ...ordinary } = generateWorkoutReport(current, history, "kg", recovery);
+    expect(included).toBe(recovery);
+    expect(ordinary).toEqual(generateWorkoutReport(current, history));
+    const text = renderWorkoutReport(generateWorkoutReport(current, history, "kg", recovery));
+    expect(text).toContain("### Recovery context\n- Garmin-reported sleep: 5 h 30 min.\n- This does not establish a cause for performance changes.");
+    expect(text.indexOf("### Recovery context")).toBeLessThan(text.indexOf("### Comparison limits"));
+  });
+
+  it("renders recovery limitations without metrics when unavailable, preserving escaping and the size cap", () => {
+    const recovery = buildRecoveryContext("2026-11-10T10:00:00Z", "synthetic-owner", {
+      userId: "synthetic-owner", provider: "garmin", status: "unavailable", fetchedAt: "2026-11-10T12:00:00Z",
+    });
+    const report = generateWorkoutReport(workout(10, []), [], "kg", recovery);
+    const text = renderWorkoutReport(report);
+    expect(text).toContain("### Recovery context");
+    expect(text).toContain("temporarily unavailable");
+    expect(text).not.toMatch(/recorded sleep|sleep quality|readiness score/i);
+    report.recovery = { observations: ["<script>unsafe</script>", "x".repeat(10000)], limitations: [] };
+    const escaped = renderWorkoutReport(report);
+    expect(escaped).not.toContain("<script>");
+    expect(escaped.length).toBeLessThanOrEqual(6000);
   });
 });

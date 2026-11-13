@@ -406,6 +406,43 @@ Behavior:
 - **Delivery:** reports appear in the in-app chat list. Nakama does not send
   push notifications or email for them; those channels are not configured.
 
+## Garmin recovery context (blocked, not shipped)
+
+Goal: let Garmin sleep and Training Readiness from before a workout inform its
+report. Status as of 2026-11-13, based on Garmin's public developer pages:
+
+- **Multi-user access needs approval.** Nakama serves several invited users, so
+  it needs the Garmin Connect Developer Program (OAuth 2.0). You get access by
+  [requesting it](https://www.garmin.com/en-US/forms/StarterGarminConnectDeveloperAccess/)
+  and being approved. Auth, data and push payload details are only in the
+  Developer Portal
+  ([program FAQ](https://developer.garmin.com/gc-developer-program/enterprise/program-faq/)).
+  No request has been submitted.
+- **Personal API is not used.** The
+  [Personal API](https://developer.garmin.com/gc-developer-program/personal/personal-faq/)
+  works by exchanging a user-created key for a 24-hour token. Its
+  [specification](https://developer.garmin.com/gc-developer-program/personal/swagger-docs/)
+  and [official client](https://github.com/garmin/connect-personal-api-python)
+  include daily sleep. Garmin says it is "not intended for commercial
+  applications serving multiple end users", so Nakama does not connect to it.
+- **Training Readiness is unverified.** The Personal API specification and
+  client have no Training Readiness data. Availability in the Developer Program
+  is not public. Nakama will not substitute HRV, Body Battery or stress for it.
+
+What exists now is a provider-neutral seam with no live provider.
+`drainWorkoutReports` accepts an optional recovery source. Production passes
+none, so reports are unchanged, and there is no Garmin connection UI, API route
+or table. When a source is passed:
+
+- `web/lib/recovery-context.ts` uses sleep only if it ended before the workout
+  started, scoped to the job owner.
+- If the source fails or takes more than five seconds, the Hevy report is still
+  delivered and says recovery context was unavailable.
+- Provider errors are never logged.
+
+A real provider must add explicit opt-in, encrypted per-user credentials,
+revocation and minimal stored fields before it is wired in.
+
 ## Phone access
 
 Open Nakama in Safari on iPhone or Chrome on Android. The mobile layout
@@ -452,5 +489,6 @@ in `img/`; optimized source artwork remains in `web/public/brand/`.
 - `web/app/api/hevy/webhook-token/route.ts`, `web/components/workout-report-webhook.tsx`: webhook token setup, rotation, and revocation.
 - `web/lib/workout-report-worker.ts`, `web/instrumentation.ts`: in-process queue worker with retries and report delivery.
 - `web/lib/workout-report.ts`: deterministic comparison against recent comparable workouts and report rendering.
+- `web/lib/recovery-context.ts`: optional pre-workout recovery context for reports (no provider wired yet).
 - `web/lib/mcp.ts`, `web/lib/system-prompt.ts`, `src/`: legacy Hevy integration,
   coaching instructions, and alternative command-line clients.

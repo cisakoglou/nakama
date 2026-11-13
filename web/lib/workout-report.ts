@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { RecoveryContext } from "@/lib/recovery-context";
 
 const metricSchema = z.number().finite().nullish();
 const setSchema = z.object({
@@ -46,6 +47,7 @@ export type WorkoutReport = {
   achievements: string[];
   patterns: string[];
   limitations: string[];
+  recovery?: RecoveryContext;
 };
 
 const HISTORY_DAYS = 90;
@@ -146,6 +148,7 @@ export function generateWorkoutReport(
   workout: HevyWorkout,
   history: HevyWorkout[],
   units: Units = "kg",
+  recovery?: RecoveryContext,
 ): WorkoutReport {
   const normalSets = workout.exercises.reduce((total, exercise) => total + workingSets(exercise).length, 0);
   const report: WorkoutReport = {
@@ -155,6 +158,7 @@ export function generateWorkoutReport(
     achievements: [],
     patterns: [],
     limitations: [],
+    ...(recovery ? { recovery } : {}),
   };
   const recent = recentHistory(workout, history);
   let compared = 0;
@@ -245,6 +249,9 @@ export function renderWorkoutReport(report: WorkoutReport): string {
     ...([
       ["What went well", report.achievements],
       ["Notable observations", report.patterns],
+      ...(report.recovery ? [["Recovery context", [
+        ...report.recovery.observations, ...report.recovery.limitations,
+      ]]] as const : []),
       ["Comparison limits", report.limitations],
     ] as const).flatMap(([heading, items]) => items.length
       ? [`### ${heading}\n${items.map((item) => `- ${markdownText(item)}`).join("\n")}`]

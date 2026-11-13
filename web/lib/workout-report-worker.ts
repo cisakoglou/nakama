@@ -2,6 +2,7 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import { HevyConnectionError, loadHevyConnection, storage } from "@/lib/hevy-connection";
+import { buildRecoveryContext, type RecoverySnapshot } from "@/lib/recovery-context";
 import type { Database } from "@/lib/supabase/database";
 import {
   generateWorkoutReport, hevyWorkoutSchema, renderWorkoutReport, type HevyWorkout,
@@ -14,6 +15,7 @@ const HISTORY_PAGES = 3;
 const HISTORY_LIMIT = 30;
 const MAX_JOBS_PER_DRAIN = 50;
 const SWEEP_INTERVAL_MS = 30_000;
+const RECOVERY_TIMEOUT_MS = 5_000;
 
 type Db = SupabaseClient<Database>;
 type FailureCode = "connection_unavailable" | "hevy_unavailable" | "invalid_workout" | "report_failed" | "delivery_failed";
@@ -25,6 +27,11 @@ export type WorkoutReportDrainSummary = {
   failed: number;
   exhausted: number;
   skipped: number;
+};
+
+// Optional pre-workout recovery data. No production source is wired until an approved provider exists.
+export type RecoverySource = {
+  load(userId: string, workout: HevyWorkout, signal: AbortSignal): Promise<RecoverySnapshot | undefined>;
 };
 
 export class WorkoutReportStorageError extends Error {}
@@ -123,7 +130,28 @@ export function workoutReportQueue(db: Db) {
 type Queue = ReturnType<typeof workoutReportQueue>;
 type Outcome = { status: "delivered" | "skipped"; reason: string | null } | { status: "failed"; reason: FailureCode; error: unknown };
 
-async function processJob(queue: Queue, job: Job): Promise<Outcome> {
+// Recovery context is optional: a failing or slow source yields an "unavailable" snapshot so the
+// Hevy report is still delivered. Provider errors are not logged because they may carry health data.
+async function loadRecovery(source: RecoverySource | undefined, userId: string, workout: HevyWorkout, now: () => Date) {
+  if (!source) return undefined;
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      source.load(userId, workout, controller.signal),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => { controller.abort(); reject(new Error("timeout")); }, RECOVERY_TIMEOUT_MS);
+      }),
+    ]);
+  } catch {
+    console.error("Workout report recovery context unavailable", { userId, workoutId: workout.id });
+    return { userId, provider: "garmin", status: "unavailable", fetchedAt: now().toISOString() } satisfies RecoverySnapshot;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function processJob(queue: Queue, job: Job, now: () => Date, recoverySource?: RecoverySource): Promise<Outcome> {
   let apiKey: string;
   try {
     const connection = await loadHevyConnection(job.user_id);
@@ -145,6 +173,7 @@ async function processJob(queue: Queue, job: Job): Promise<Outcome> {
   }
   if (!workout || workout.id !== job.workout_id) return { status: "failed", reason: "invalid_workout", error: null };
 
+  const snapshot = await loadRecovery(recoverySource, job.user_id, workout, now);
   let content: string;
   try {
     const units = await queue.units(job.user_id);
@@ -153,7 +182,10 @@ async function processJob(queue: Queue, job: Job): Promise<Outcome> {
       .filter((past) => past.id !== workout.id && Date.parse(past.start_time) < start)
       .sort((a, b) => Date.parse(b.start_time) - Date.parse(a.start_time))
       .slice(0, HISTORY_LIMIT);
-    content = renderWorkoutReport(generateWorkoutReport(workout, history, units));
+    const recovery = buildRecoveryContext(workout.start_time, job.user_id, snapshot);
+    content = renderWorkoutReport(recovery
+      ? generateWorkoutReport(workout, history, units, recovery)
+      : generateWorkoutReport(workout, history, units));
   } catch (error) {
     if (error instanceof HevyRequestError) return { status: "failed", reason: "hevy_unavailable", error };
     return { status: "failed", reason: "report_failed", error };
@@ -168,14 +200,16 @@ async function processJob(queue: Queue, job: Job): Promise<Outcome> {
   return { status: "delivered", reason: null };
 }
 
-export async function drainWorkoutReports(db: Db = storage(), now: () => Date = () => new Date()) {
+export async function drainWorkoutReports(
+  db: Db = storage(), now: () => Date = () => new Date(), recoverySource?: RecoverySource,
+) {
   const queue = workoutReportQueue(db);
   const summary: WorkoutReportDrainSummary = { claimed: 0, delivered: 0, failed: 0, exhausted: 0, skipped: 0 };
   for (let index = 0; index < MAX_JOBS_PER_DRAIN; index++) {
     const job = await queue.claimNext();
     if (!job) break;
     summary.claimed++;
-    const outcome = await processJob(queue, job);
+    const outcome = await processJob(queue, job, now, recoverySource);
     await queue.finish(job, outcome.status, outcome.reason, now());
     summary[outcome.status]++;
     if (outcome.status !== "failed") continue;
