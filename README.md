@@ -151,6 +151,11 @@ They do not contact Supabase, Hevy, or Anthropic.
    [`supabase/migrations/202611040001_chat_conversations.sql`](supabase/migrations/202611040001_chat_conversations.sql)
    once, before deploying chat history. It adds private conversations and
    account-deletion cascading without changing existing profiles or credentials.
+   Then run
+   [`supabase/migrations/202611130001_workout_reports.sql`](supabase/migrations/202611130001_workout_reports.sql)
+   once, before enabling post-workout reports. It adds hashed per-connection
+   webhook tokens, a server-only report job queue, and lets the server role
+   insert report chats.
 2. Add each approved email through the SQL Editor, replacing the example:
 
    ```sql
@@ -224,6 +229,10 @@ unsent drafts, activity timestamps, and stream/version metadata. Database
 policies require both ownership and an active invitation for every operation.
 It saves no raw tool results, executable tool/approval state, or Hevy passwords.
 Workout information mentioned in a conversation is retained as chat text.
+`public.hevy_webhook_tokens` stores a SHA-256 hash of each account's Hevy
+webhook token (never the token itself). `public.workout_reports` stores each
+received workout ID with its delivery status, attempt count, next retry time,
+and a short failure code; only the server role can access them. Delivered post-workout reports are saved as chat text.
 
 Each conversation holds at most 40 text messages, stored as a bounded JSON
 transcript in its row. The picker loads history in pages of 20. The server
@@ -335,6 +344,68 @@ The provisional beta flow is guided, one-time API-key entry for invited Hevy
 Pro users, subject to those checks. State this requirement before signup and
 do not promise a frictionless connection until it has been tested.
 
+## Post-workout reports
+
+After a new workout is logged in Hevy, Nakama adds a **Workout report** chat
+to that account. It lists what went well and notable positive or negative
+patterns against recent comparable workouts (same exercise and matching set
+layout), with stated limitations. It makes no medical or injury claims.
+
+**Trigger: Hevy webhook.** Hevy Pro's developer settings
+(<https://hevy.com/settings?developer>) offer a webhook: a URL plus an
+authorization header. When a new workout is saved, Hevy POSTs
+`{"workoutId":"<uuid>"}` and expects HTTP 200 within five seconds. Hevy's
+public API specification does not document this feature, its retry policy, or
+the exact header name; Nakama expects the configured value in
+`Authorization`. Whether Hevy retries a non-200 response is unknown.
+
+Set it up per account:
+
+1. Connect Hevy in Nakama settings, then choose **Set up workout reports**.
+   Nakama shows the webhook URL (`$APP_ORIGIN/api/hevy/webhook`) and a complete
+   authorization header `Bearer nkwh_...` **once**; it stores only a hash.
+2. In Hevy developer settings, under Webhooks, paste the URL and the
+   authorization header value, then save.
+3. **Create a new authorization header** rotates it (the old one stops
+   working immediately; update Hevy). **Turn off workout reports** revokes it.
+   Replacing or disconnecting the Hevy key also invalidates it.
+
+The token identifies the account; the payload never selects the owner. The
+webhook route verifies the token, accepts at most 4 KB of JSON with a UUID
+`workoutId`, durably inserts a queued job, and only then returns 200. Database
+work and body reading share a three-second deadline; a storage failure or
+timeout returns 503 so nothing is acknowledged without being saved. The route
+makes no Hevy calls.
+
+A worker inside the long-running Next.js server (started from
+`web/instrumentation.ts`) processes jobs: it is woken right after a new job is
+saved and also re-checks the **database queue** every 30 seconds. That sweep
+only picks up already-received jobs (retries, missed wake-ups, or jobs left by
+a restart); it never polls Hevy for new workouts. For each job it loads that
+account's Hevy key, fetches the workout and up to 30 earlier workouts, and
+saves the report chat.
+
+**Deployment prerequisite:** this requires a persistent Node.js server
+(`next start`, as on the current Railway service) with Railway's App
+Sleeping/serverless mode turned off. On serverless or sleeping hosts, queued
+jobs stay saved but are not processed until the server is running again. No
+separate worker service or external queue is provisioned.
+
+Behavior:
+
+- **No backfill:** only workouts Hevy sends after the webhook is set up are
+  reported.
+- **Duplicates:** each account/workout pair is queued once, so repeated
+  webhook deliveries return 200 without a second report; concurrent workers
+  claim jobs with `FOR UPDATE SKIP LOCKED`.
+- **Failures:** Hevy, report, or delivery failures are recorded with a failure
+  code and retried after 1, 5, 30, and 120 minutes (five attempts in total),
+  then logged as exhausted. Jobs abandoned mid-run are reclaimed after ten
+  minutes. Workouts no longer in Hevy, or jobs for a replaced or removed
+  connection, are marked skipped.
+- **Delivery:** reports appear in the in-app chat list. Nakama does not send
+  push notifications or email for them; those channels are not configured.
+
 ## Phone access
 
 Open Nakama in Safari on iPhone or Chrome on Android. The mobile layout
@@ -377,5 +448,9 @@ in `img/`; optimized source artwork remains in `web/public/brand/`.
 - `web/app/api/chat/route.ts`: authenticated private coaching and write approvals.
 - `web/app/api/conversations/`: owner-scoped chat history, drafts, rename, and deletion.
 - `web/lib/conversations.ts`, `web/lib/conversation-stream.ts`: versioned storage and response checkpoints.
+- `web/app/api/hevy/webhook/route.ts`, `web/lib/hevy-webhook.ts`: token-authenticated Hevy webhook that durably queues workouts.
+- `web/app/api/hevy/webhook-token/route.ts`, `web/components/workout-report-webhook.tsx`: webhook token setup, rotation, and revocation.
+- `web/lib/workout-report-worker.ts`, `web/instrumentation.ts`: in-process queue worker with retries and report delivery.
+- `web/lib/workout-report.ts`: deterministic comparison against recent comparable workouts and report rendering.
 - `web/lib/mcp.ts`, `web/lib/system-prompt.ts`, `src/`: legacy Hevy integration,
   coaching instructions, and alternative command-line clients.

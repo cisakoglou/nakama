@@ -6,6 +6,7 @@ import { TrainingLoader } from "@/components/training-loader";
 import { SignInForm } from "@/components/sign-in-form";
 import { ProfileForm } from "@/components/profile-form";
 import { HevyConnectionForm } from "@/components/hevy-connection-form";
+import { WorkoutReportWebhook } from "@/components/workout-report-webhook";
 import { ChatPanel } from "@/components/chat-panel";
 import { readApiResponse } from "@/lib/api-response";
 import {
@@ -155,6 +156,9 @@ export default function Home() {
                     className="ml-4 mt-5 min-h-11 text-sm underline underline-offset-4"
                   >Back to your Nakama</button>}
                   <HevyConnectionForm connection={screen.account.connection} onChanged={reloadAccount} />
+                  {screen.account.connection.connected && (
+                    <WorkoutReportWebhook key={screen.account.connection.revision} />
+                  )}
                 </>
               )}
             </>

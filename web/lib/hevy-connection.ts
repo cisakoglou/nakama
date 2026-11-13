@@ -45,7 +45,7 @@ export function decryptHevyKey(userId: string, value: string) {
   }
 }
 
-function storage() {
+export function storage() {
   const { url } = getSupabaseConfig();
   const secret = process.env.SUPABASE_SECRET_KEY;
   if (!secret?.startsWith("sb_secret_")) {
