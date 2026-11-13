@@ -170,6 +170,10 @@ export function ChatPanel({ onSettings, onSignOut, signingOut, accountError, use
         <button onClick={() => { void run(create); }} disabled={disabled} className="min-h-11 text-sm underline underline-offset-4 disabled:opacity-50">New chat</button>
         <details className="account-menu"><summary aria-label="Account menu">•••</summary><div>
         <button onClick={() => { void run(async () => onSettings()); }} disabled={disabled} className="min-h-11 text-sm underline underline-offset-4 disabled:opacity-50">Settings</button>
+        <a href="/features" target="_blank" rel="noopener noreferrer"
+          className="flex min-h-11 w-full items-center rounded-[10px] px-3.5 text-left text-sm no-underline hover:bg-[var(--atlas-espresso)]">
+          Features<span className="sr-only"> (opens in a new tab)</span>
+        </a>
         <button onClick={() => { void run(async () => onSignOut()); }} disabled={disabled || signingOut} className="min-h-11 text-sm underline underline-offset-4 disabled:opacity-50">
           {signingOut ? "Signing out..." : "Sign out"}
         </button>

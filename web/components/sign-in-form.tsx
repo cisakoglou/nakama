@@ -95,6 +95,9 @@ export function SignInForm({ message, onRefresh }: { message?: string; onRefresh
       <p className="mt-6 text-xs leading-5 text-ink-muted">
         No Hevy password is requested. After signing in, connect your own Hevy Pro API key to meet your Nakama.
       </p>
+      <a href="/features"
+        className="mt-4 inline-flex min-h-11 items-center text-sm font-semibold text-brand underline underline-offset-4 hover:text-brand-hover"
+      >See what Nakama can do</a>
     </>
   );
 }
