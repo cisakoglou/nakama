@@ -10,6 +10,7 @@ import { WorkoutReportWebhook } from "@/components/workout-report-webhook";
 import { ReportNotifications } from "@/components/report-notifications";
 import { ChatPanel } from "@/components/chat-panel";
 import { readApiResponse } from "@/lib/api-response";
+import { browserPushSubscription, releasePushSubscription } from "@/lib/push-client";
 import {
   accountSchema, EQUIPMENT_LABELS, EXPERIENCE_LABELS, GOAL_LABELS, type Account,
 } from "@/lib/profile";
@@ -88,6 +89,8 @@ export default function Home() {
     setSigningOut(true);
     setActionError(null);
     try {
+      // Needs the session (DELETE /api/push is authenticated), so it runs first; bounded and never throws.
+      await releasePushSubscription({ subscription: browserPushSubscription, fetch: window.fetch.bind(window) });
       const { error } = await createClient().auth.signOut();
       if (error) throw error;
       setScreen({ kind: "sign-in" });

@@ -425,7 +425,8 @@ Behavior:
   notifies once: delivered jobs are never reclaimed, and a retry only happens
   if the earlier attempt stopped before it notified. Devices that the push
   service reports as gone (404/410), or that fail five times in a row, are
-  removed. **iPhone/iPad:** Web Push works only after **Add to Home Screen**
+  removed. Signing out turns notifications off for that device (best effort,
+  never blocks sign-out). **iPhone/iPad:** Web Push works only after **Add to Home Screen**
   and opening Nakama from that icon (iOS 16.4+).
 
 ## Phone access

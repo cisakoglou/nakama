@@ -37,3 +37,40 @@ export function sameServerKey(current: ArrayBuffer | null | undefined, publicKey
   const b = base64UrlToBytes(publicKey);
   return a.length === b.length && a.every((byte, index) => byte === b[index]);
 }
+
+type DeviceSubscription = { endpoint: string; unsubscribe(): Promise<boolean> };
+export type ReleaseDeps = {
+  subscription: () => Promise<DeviceSubscription | null>;
+  fetch: typeof fetch;
+  timeoutMs?: number;
+};
+
+export const RELEASE_TIMEOUT_MS = 2_000;
+
+// Best effort before sign-out, so a shared device stops getting the previous user's report notifications.
+// Never throws and resolves within the timeout. Unsubscribing locally even when the DELETE fails is enough:
+// the push service then answers 404/410 and the server drops the row on the next send.
+export async function releasePushSubscription(deps: ReleaseDeps): Promise<void> {
+  const timeoutMs = deps.timeoutMs ?? RELEASE_TIMEOUT_MS;
+  const work = (async () => {
+    const subscription = await deps.subscription().catch(() => null);
+    if (!subscription) return;
+    try {
+      await deps.fetch("/api/push", {
+        method: "DELETE", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ endpoint: subscription.endpoint }), signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch { /* the server copy is cleaned up when the push service reports it gone */ }
+    try { await subscription.unsubscribe(); } catch { /* nothing more to do */ }
+  })();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([work, new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs); })]);
+  clearTimeout(timer);
+}
+
+// This browser's current push subscription, if a service worker was ever registered.
+export async function browserPushSubscription(): Promise<DeviceSubscription | null> {
+  if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return null;
+  const registration = await navigator.serviceWorker.getRegistration("/");
+  return (await registration?.pushManager?.getSubscription()) ?? null;
+}
