@@ -55,6 +55,61 @@ export function parseHistoryWorkout(value: unknown): HevyWorkout | null {
   const lenient = hevyWorkoutSchema.safeParse({ ...raw, exercises });
   return lenient.success ? lenient.data : null;
 }
+
+const historyEntrySchema = z.object({
+  workout_id: z.string().min(1),
+  workout_title: z.string().nullish(),
+  workout_start_time: z.string().datetime({ offset: true }),
+  workout_end_time: z.string().datetime({ offset: true }),
+  exercise_template_id: z.string().min(1),
+  set_type: z.string().nullish(),
+});
+
+/**
+ * Adapts Hevy exercise_history responses (one entry per set, one request per exercise template)
+ * into per-workout sessions. Entries that fail validation are dropped, never whole histories.
+ */
+export function historyFromExerciseHistory(
+  responses: { templateId: string; title: string; entries: unknown[] }[],
+  excludeWorkoutId: string,
+): HevyWorkout[] {
+  const workouts = new Map<string, HevyWorkout>();
+  const exercises = new Map<string, Exercise>();
+  for (const { templateId, title, entries } of responses) {
+    for (const raw of entries) {
+      const entry = historyEntrySchema.safeParse(raw);
+      const set = setSchema.safeParse(raw === null || typeof raw !== "object" ? null : {
+        type: (raw as { set_type?: unknown }).set_type,
+        weight_kg: (raw as { weight_kg?: unknown }).weight_kg,
+        reps: (raw as { reps?: unknown }).reps,
+        distance_meters: (raw as { distance_meters?: unknown }).distance_meters,
+        duration_seconds: (raw as { duration_seconds?: unknown }).duration_seconds,
+        rpe: (raw as { rpe?: unknown }).rpe,
+        custom_metric: (raw as { custom_metric?: unknown }).custom_metric,
+      });
+      if (!entry.success || !set.success || entry.data.exercise_template_id !== templateId
+        || entry.data.workout_id === excludeWorkoutId) continue;
+      const data = entry.data;
+      let workout = workouts.get(data.workout_id);
+      if (!workout) {
+        workout = {
+          id: data.workout_id, title: data.workout_title ?? "Workout",
+          start_time: data.workout_start_time, end_time: data.workout_end_time, exercises: [],
+        };
+        workouts.set(data.workout_id, workout);
+      }
+      const key = `${data.workout_id}\u0000${templateId}`;
+      let exercise = exercises.get(key);
+      if (!exercise) {
+        exercise = { title, exercise_template_id: templateId, sets: [] };
+        exercises.set(key, exercise);
+        workout.exercises.push(exercise);
+      }
+      exercise.sets.push({ ...set.data, index: exercise.sets.length });
+    }
+  }
+  return [...workouts.values()];
+}
 type Exercise = HevyWorkout["exercises"][number];
 type WorkoutSet = Exercise["sets"][number];
 type Units = "kg" | "lb";
@@ -75,6 +130,7 @@ export type WorkoutReport = {
 const HISTORY_DAYS = 90;
 const TREND_SESSIONS = 4;
 const SAME_E1RM = 0.02;
+const MIN_AVERAGE_SESSIONS = 3;
 const KG_TO_LB = 2.2046226218;
 
 function label(value: string) {
@@ -146,14 +202,29 @@ function paceLabel(pace: number) {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")} /km recorded pace`;
 }
 
-/** The metric used for the headline change. Higher is better except pace (seconds per km). */
-function primaryValues(series: Summary[]): { values: number[]; name: string } {
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** Day and month as written in the workout's own timestamp (no locale or timezone conversion). */
+function shortDate(iso: string) {
+  const match = /^\d{4}-(\d{2})-(\d{2})/.exec(iso);
+  return match ? `${Number(match[2])} ${MONTHS[Number(match[1]) - 1]}` : "an earlier date";
+}
+
+/** The per-session metric used for every comparison. Higher is better except pace (seconds per km). */
+function primaryValues(series: Summary[]): { values: number[]; name: string; format: (value: number, units: Units) => string } {
   const first = series[0];
-  if (first.kind === "pace") return { values: series.map((s) => (s as typeof first).pace), name: "recorded pace" };
-  if (first.kind === "bodyweight") return { values: series.map((s) => (s as typeof first).totalReps), name: "total reps" };
+  const weight = (kg: number, units: Units) => `${number(units === "lb" ? kg * KG_TO_LB : kg)} ${units}`;
+  if (first.kind === "pace") {
+    return { values: series.map((s) => (s as typeof first).pace), name: "recorded pace", format: (value) => paceLabel(value) };
+  }
+  if (first.kind === "bodyweight") {
+    return { values: series.map((s) => (s as typeof first).bestReps), name: "best-set reps", format: (value) => `${number(value)} reps` };
+  }
   const strengths = series as (typeof first)[];
-  if (strengths.every((s) => s.e1rm !== null)) return { values: strengths.map((s) => s.e1rm!), name: "estimated 1RM" };
-  return { values: strengths.map((s) => s.topWeight), name: "top set weight" };
+  if (strengths.every((s) => s.e1rm !== null)) {
+    return { values: strengths.map((s) => s.e1rm!), name: "estimated 1RM", format: weight };
+  }
+  return { values: strengths.map((s) => s.topWeight), name: "top set weight", format: weight };
 }
 
 function describe(current: Summary, previous: Summary, units: Units, change: number) {
@@ -162,7 +233,7 @@ function describe(current: Summary, previous: Summary, units: Units, change: num
     return `${paceLabel(current.pace)} vs ${paceLabel(previous.pace)} (${current.sets} ${current.sets === 1 ? "set" : "sets"} vs ${previous.sets}, similar total distance)`;
   }
   if (current.kind === "bodyweight" && previous.kind === "bodyweight") {
-    return `${current.totalReps} total reps vs ${previous.totalReps} total reps (${percent(change)}); best set ${current.bestReps} vs ${previous.bestReps} reps`;
+    return `best set ${current.bestReps} vs ${previous.bestReps} reps (${percent(change)}); ${current.totalReps} total reps vs ${previous.totalReps}`;
   }
   if (current.kind === "strength" && previous.kind === "strength") {
     const parts = [];
@@ -223,21 +294,23 @@ export function generateWorkoutReport(
       continue;
     }
     timed ||= current.kind === "pace";
-    const previousExercises = recent.flatMap((entry) => {
+    const previousSessions = recent.flatMap((entry) => {
       const matches = entry.exercises.filter((candidate) =>
         candidate.exercise_template_id === exercise.exercise_template_id);
-      return matches.length === 1 ? matches : [];
+      return matches.length === 1 ? [{ exercise: matches[0], start: entry.start_time }] : [];
     });
-    if (!previousExercises.length) {
+    if (!previousSessions.length) {
       report.limitations.push(`${name}: first time logging this exercise in the last ${HISTORY_DAYS} days, so there is nothing to compare yet.`);
       continue;
     }
-    const previous = previousExercises.map(summarize)
-      .filter((entry): entry is Summary => entry !== null && comparable(current, entry));
-    if (!previous.length) {
+    const dated = previousSessions
+      .map((session) => ({ summary: summarize(session.exercise), start: session.start }))
+      .filter((entry): entry is { summary: Summary; start: string } => entry.summary !== null && comparable(current, entry.summary));
+    if (!dated.length) {
       report.limitations.push(`${name}: earlier sessions in the last ${HISTORY_DAYS} days have no comparable normal-set metrics.`);
       continue;
     }
+    const previous = dated.map((entry) => entry.summary);
     compared++;
     // Always the most recent comparable session, never a more favorable older one.
     const baseline = previous[0];
@@ -246,9 +319,38 @@ export function generateWorkoutReport(
     const lowerIsBetter = current.kind === "pace";
     const gain = (index: number, other: number) => (values[index] - values[other]) / values[other] * (lowerIsBetter ? -1 : 1);
     const change = gain(0, 1);
-    const comparison = `${name}: ${describe(current, baseline, units, change)} in the previous session of this exercise.`;
+
+    // Same per-session metric over every comparable previous session in the window.
+    const all = primaryValues([current, ...previous]);
+    const currentValue = all.values[0];
+    const earlier = all.values.slice(1);
+    const relative = (reference: number) => (currentValue - reference) / reference * (lowerIsBetter ? -1 : 1);
+    const clauses: string[] = [];
+    let notable = false;
+    if (earlier.length >= MIN_AVERAGE_SESSIONS) {
+      const average = earlier.reduce((total, value) => total + value, 0) / earlier.length;
+      const delta = relative(average);
+      const shown = all.format(average, units);
+      notable ||= Math.abs(delta) >= SAME_E1RM;
+      clauses.push(Math.abs(delta) < SAME_E1RM ? `about the same as your 3-month average (${shown})`
+        : lowerIsBetter ? `${number(Math.abs(delta) * 100)}% ${delta > 0 ? "faster" : "slower"} than your 3-month average (${shown})`
+        : `${percent(delta)} vs your 3-month average (${shown})`);
+    }
+    const bestIndex = earlier.reduce((best, value, index) =>
+      (lowerIsBetter ? value < earlier[best] : value > earlier[best]) ? index : best, 0);
+    const bestValue = earlier[bestIndex];
+    const bestShown = `${all.format(bestValue, units)}, ${shortDate(dated[bestIndex].start)}`;
+    const delta = relative(bestValue);
+    notable ||= Math.abs(delta) >= SAME_E1RM;
+    const newBest = delta >= SAME_E1RM || (current.kind === "bodyweight" && delta > 0);
+    if (newBest) clauses.push(`**New 3-month best** (previous ${bestShown})`);
+    else if (Math.abs(delta) < SAME_E1RM) clauses.push(`about the same as your 3-month best (${bestShown})`);
+    else clauses.push(`${number(Math.abs(delta) * 100)}% ${lowerIsBetter ? "slower than" : "below"} your 3-month best (${bestShown})`);
+
+    const comparison = `${name}: ${describe(current, baseline, units, change)} in the previous session of this exercise; ${clauses.join("; ")}.`;
     const bestRepsUp = current.kind === "bodyweight" && baseline.kind === "bodyweight" && current.bestReps > baseline.bestReps;
-    if (current.kind === "pace" ? change >= 0.025 : change >= SAME_E1RM || bestRepsUp) {
+    const achieved = newBest || (current.kind === "pace" ? change >= 0.025 : change >= SAME_E1RM || bestRepsUp);
+    if (achieved) {
       report.achievements.push(comparison);
     }
     const differences = series.slice(0, -1).map((_, index) => gain(index, index + 1));
@@ -260,7 +362,10 @@ export function generateWorkoutReport(
         ? totalChange > 0 ? "faster" : "slower"
         : totalChange > 0 ? "improving" : "decreasing";
       report.patterns.push(`${name}: ${directionLabel} ${metric} across ${TREND_SESSIONS} sessions of this exercise (${percent(totalChange)} overall). Training context can explain changes; this is not a health assessment.`);
-    } else if (change <= -0.05 && !bestRepsUp) {
+    } else if (change > -0.05 || bestRepsUp) {
+      // Not an achievement or established trend: still surface the 3-month context when it differs from "about the same".
+      if (!achieved && notable) report.patterns.push(comparison);
+    } else {
       report.patterns.push(`${comparison} ${current.kind === "pace" ? "Slower" : "Lower"} this session, not an established trend; ordinary variation or planned training changes can explain it.`);
     }
   }
@@ -270,7 +375,7 @@ export function generateWorkoutReport(
   if (compared && !report.achievements.length && !report.patterns.length) {
     report.patterns.push("No notable change in the comparable recorded metrics; that alone does not establish a plateau.");
   }
-  report.limitations.push("Each exercise is compared with its most recent previous session in the last 90 days, even when set counts, loads and reps differ; trends need 4 sessions. Strength changes use an estimated 1RM (Epley formula, sets of 1-12 reps), which is only an estimate; top set and total volume are shown as context. Warmup, dropset and failure sets are excluded, and workout-wide totals are not treated as performance changes.");
+  report.limitations.push("Each exercise is compared with its most recent previous session, its 3-month average and its 3-month best, all within the last 90 days and even when set counts, loads and reps differ; the average is shown only with at least 3 previous sessions and trends need 4 sessions. Strength changes use an estimated 1RM (Epley formula, sets of 1-12 reps), which is only an estimate; bodyweight exercises use best-set reps; top set and total volume are shown as context. Warmup, dropset and failure sets are excluded, and workout-wide totals are not treated as performance changes.");
   report.limitations.push("Technique, effort, rest, bodyweight and training intent are not established by these metrics; changes are observations, not diagnoses or all-time records.");
   if (timed) {
     report.limitations.push("Distance/time comparisons use recorded activity only. Terrain, elevation, weather, heart rate and GPS are unavailable; activity titles do not prove a run.");

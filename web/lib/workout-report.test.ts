@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  generateWorkoutReport, hevyWorkoutSchema, parseHistoryWorkout, renderWorkoutReport, type HevyWorkout,
+  generateWorkoutReport, hevyWorkoutSchema, historyFromExerciseHistory, parseHistoryWorkout, renderWorkoutReport, type HevyWorkout,
 } from "./workout-report";
 
 type Exercise = HevyWorkout["exercises"][number];
@@ -114,10 +114,10 @@ describe("workout report comparisons", () => {
 
   it("compares bodyweight exercises by best set and total reps", () => {
     const report = generateWorkoutReport(workout(10, [strength([12, 10], 0)]), [workout(9, [strength([10, 10, 8], 0)])]);
-    expect(report.achievements[0]).toContain("22 total reps vs 28 total reps");
+    expect(report.achievements[0]).toContain("22 total reps vs 28");
     expect(report.achievements[0]).toContain("best set 12 vs 10 reps");
     const same = generateWorkoutReport(workout(10, [strength([12], 0)]), [workout(9, [strength([10], 0)])]);
-    expect(same.achievements[0]).toContain("12 total reps vs 10 total reps");
+    expect(same.achievements[0]).toContain("12 total reps vs 10");
     const missing = { ...strength([10]), sets: [{ type: "normal" as const, reps: 10, weight_kg: null }] };
     const unsupported = generateWorkoutReport(workout(10, [strength([12], 0)]), [workout(9, [missing])]);
     expect(unsupported.achievements).toEqual([]);
@@ -269,5 +269,81 @@ describe("workout report comparisons", () => {
     expect(rendered).not.toContain("\n# injected");
     report.limitations.push("x".repeat(10000));
     expect(renderWorkoutReport(report).length).toBeLessThanOrEqual(6000);
+  });
+});
+
+describe("3-month average and best", () => {
+  const bench = (weight: number) => strength([5, 5, 5], weight);
+
+  it("shows the average only with at least 3 previous sessions", () => {
+    const two = generateWorkoutReport(workout(10, [bench(60)]), [workout(9, [bench(55)]), workout(8, [bench(50)])]);
+    expect(two.achievements.join(" ")).not.toContain("3-month average");
+    const three = generateWorkoutReport(workout(10, [bench(60)]), [workout(9, [bench(55)]), workout(8, [bench(50)]), workout(7, [bench(45)])]);
+    expect(three.achievements[0]).toContain("+20% vs your 3-month average (58.3 kg)");
+  });
+
+  it("calls out a new 3-month best with the previous best and its date", () => {
+    const report = generateWorkoutReport(workout(10, [bench(60)]), [workout(9, [bench(50)]), workout(5, [bench(55)]), workout(2, [bench(40)])]);
+    expect(report.achievements[0]).toContain("**New 3-month best** (previous 64.2 kg, 5 Nov)");
+  });
+
+  it("reports how far below the 3-month best, without calling it an achievement", () => {
+    const report = generateWorkoutReport(workout(10, [bench(50)]), [workout(9, [bench(52)]), workout(5, [bench(60)])]);
+    const text = [...report.achievements, ...report.patterns].join(" ");
+    expect(text).toContain("16.7% below your 3-month best (70 kg, 5 Nov)");
+    expect(report.achievements).toEqual([]);
+  });
+
+  it("treats a value within 2% of the best as about the same", () => {
+    const report = generateWorkoutReport(workout(10, [bench(60)]), [workout(9, [bench(59.5)])]);
+    expect(report.patterns[0]).toContain("No notable change");
+    expect(report.achievements).toEqual([]);
+  });
+
+  it("uses best-set reps for bodyweight exercises", () => {
+    const report = generateWorkoutReport(workout(10, [strength([12], 0)]), [workout(9, [strength([10, 10], 0)]), workout(5, [strength([8], 0)]), workout(2, [strength([9], 0)])]);
+    expect(report.achievements[0]).toContain("+33.3% vs your 3-month average (9 reps)");
+    expect(report.achievements[0]).toContain("**New 3-month best** (previous 10 reps, 9 Nov)");
+  });
+
+  it("uses recorded pace with faster being better", () => {
+    const report = generateWorkoutReport(workout(10, [cardio(1500)]), [workout(9, [cardio(1550)]), workout(5, [cardio(1600)]), workout(2, [cardio(1650)])]);
+    expect(report.achievements[0]).toContain("faster than your 3-month average (5:20 /km recorded pace)");
+    expect(report.achievements[0]).toContain("**New 3-month best** (previous 5:10 /km recorded pace, 9 Nov)");
+    const slower = generateWorkoutReport(workout(10, [cardio(1700)]), [workout(9, [cardio(1550)])]);
+    expect(slower.patterns.join(" ")).toContain("slower than your 3-month best (5:10 /km recorded pace, 9 Nov)");
+  });
+
+  it("makes no history claims for a first-time exercise", () => {
+    const report = generateWorkoutReport(workout(10, [bench(60)]), [workout(9, [strength([5], 50, "squat")])]);
+    expect(report.achievements).toEqual([]);
+    expect(report.limitations.join(" ")).toContain("first time logging this exercise");
+  });
+
+  it("displays averages and bests in lb", () => {
+    const report = generateWorkoutReport(workout(10, [bench(60)]), [workout(9, [bench(50)]), workout(8, [bench(50)]), workout(7, [bench(50)])], "lb");
+    expect(report.achievements[0]).toContain("vs your 3-month average (128.6 lb)");
+    expect(report.achievements[0]).toContain("previous 128.6 lb, 9 Nov");
+  });
+
+  it("stays within the render cap and documents the 90-day window", () => {
+    const many = Array.from({ length: 20 }, (_, i) => strength([5, 5, 5], 60 + i, `ex${i}`));
+    const past = Array.from({ length: 6 }, (_, d) => workout(d + 1, many.map((e) => ({ ...e, sets: e.sets.map((s) => ({ ...s, weight_kg: 40 })) }))));
+    const rendered = renderWorkoutReport(generateWorkoutReport(workout(10, many), past));
+    expect(rendered.length).toBeLessThanOrEqual(6000);
+    const limits = renderWorkoutReport(generateWorkoutReport(workout(10, [bench(60)]), [workout(9, [bench(50)])]));
+    expect(limits).toContain("last 90 days");
+    expect(limits).toContain("at least 3 previous sessions");
+  });
+
+  it("adapts exercise_history sets into sessions, dropping bad sets and the current workout", () => {
+    const entry = (id: string, day: number, extra: object = {}) => ({
+      workout_id: id, workout_title: "T", workout_start_time: `2026-11-0${day}T10:00:00Z`,
+      workout_end_time: `2026-11-0${day}T11:00:00Z`, exercise_template_id: "bench", weight_kg: 50, reps: 5, set_type: "normal", ...extra,
+    });
+    const sessions = historyFromExerciseHistory([{ templateId: "bench", title: "Bench", entries: [
+      entry("a", 1), entry("a", 1), entry("a", 1, { reps: "x" }), entry("a", 1, { set_type: "bogus" }), entry("cur", 2), null, entry("b", 3),
+    ] }], "cur");
+    expect(sessions.map((w) => [w.id, w.exercises[0].sets.length])).toEqual([["a", 2], ["b", 1]]);
   });
 });
