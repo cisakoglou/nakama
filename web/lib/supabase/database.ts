@@ -46,6 +46,18 @@ export type Database = {
         Update: { token_hash?: string; connection_revision?: string; created_at?: string };
         Relationships: [];
       };
+      push_subscriptions: {
+        Row: {
+          id: string; user_id: string; endpoint: string; p256dh: string; auth: string;
+          created_at: string; last_success_at: string | null; failure_count: number;
+        };
+        Insert: { user_id: string; endpoint: string; p256dh: string; auth: string; created_at?: string; failure_count?: number };
+        Update: {
+          user_id?: string; p256dh?: string; auth?: string; created_at?: string;
+          last_success_at?: string | null; failure_count?: number;
+        };
+        Relationships: [];
+      };
       workout_reports: {
         Row: WorkoutReportRow;
         Insert: { user_id: string; workout_id: string; connection_revision: string };

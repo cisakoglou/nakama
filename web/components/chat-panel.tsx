@@ -8,6 +8,10 @@ import { ConversationChat } from "@/components/conversation-chat";
 import { readApiResponse } from "@/lib/api-response";
 import { chatRecovery } from "@/lib/chat-recovery";
 import {
+  chatDeepLink, isWorkoutReport, latestCreatedAt, LIST_REFRESH_INTERVAL_MS, mergeLatest, newReportIds, reportsSeenStore,
+  withoutChatParam,
+} from "@/lib/report-notices";
+import {
   conversationListSchema, conversationResponseSchema, type Conversation, type ConversationSummary,
 } from "@/lib/conversation-types";
 
@@ -42,6 +46,19 @@ export function ChatPanel({ onSettings, onSignOut, signingOut, accountError, use
   }, []);
   const action = useRef(false);
   const flush = useRef<() => Promise<boolean>>(async () => true);
+  const [seenAt, setSeenAt] = useState<string | null>(null);
+  const seenRef = useRef<string | null>(null);
+  const lastRefresh = useRef(0);
+  const openFromNotification = useRef<(id: string) => void>(() => {});
+
+  // Advances the per-account "seen" mark for report chats; never moves it backwards.
+  const markSeen = useCallback((mark: string | null) => {
+    if (!mark || (seenRef.current && Date.parse(seenRef.current) >= Date.parse(mark))) return;
+    seenRef.current = mark;
+    setSeenAt(mark);
+    try { reportsSeenStore(window.localStorage, userId).set(mark); }
+    catch (error) { if (!(error instanceof Error)) throw error; }
+  }, [userId]);
 
   const list = useCallback(async (page = 0, append = false) => {
     const result = await readApiResponse(await fetch(`/api/conversations?page=${page}`, { cache: "no-store" }), conversationListSchema);
@@ -68,14 +85,24 @@ export function ChatPanel({ onSettings, onSignOut, signingOut, accountError, use
     let disposed = false;
     async function load() {
       try {
+        const link = chatDeepLink(window.location.search);
+        if (link) window.history.replaceState(window.history.state, "", withoutChatParam(window.location.href));
         const rows = await list();
         if (disposed) return;
+        let stored: string | null = null;
+        try { stored = reportsSeenStore(window.localStorage, userId).get(); }
+        catch (error) { if (!(error instanceof Error)) throw error; }
+        // First visit on this device: existing reports count as seen.
+        if (stored) { seenRef.current = stored; setSeenAt(stored); }
+        else markSeen(latestCreatedAt(rows, null) ?? new Date().toISOString());
+        lastRefresh.current = Date.now();
         let selected = rows[0]?.id;
         try { selected = chatRecovery(window.localStorage, userId).active() ?? selected; }
         catch (error) {
           if (!(error instanceof Error)) throw error;
           setStorageError("The last open chat could not be restored from this browser. Choose it from Chats.");
         }
+        selected = link ?? selected;
         if (selected) {
           let response = await fetch(`/api/conversations/${selected}`, { cache: "no-store" });
           if (response.status === 404 && rows[0] && selected !== rows[0].id) {
@@ -91,7 +118,50 @@ export function ChatPanel({ onSettings, onSignOut, signingOut, accountError, use
     }
     void load();
     return () => { disposed = true; };
-  }, [list, userId]);
+  }, [list, markSeen, userId]);
+
+  // Picks up reports delivered while the tab was in the background, without dropping older loaded pages.
+  const refresh = useCallback(async (force = false) => {
+    if (!force && (document.visibilityState !== "visible" || Date.now() - lastRefresh.current < LIST_REFRESH_INTERVAL_MS)) return;
+    lastRefresh.current = Date.now();
+    try {
+      const result = await readApiResponse(await fetch("/api/conversations?page=0", { cache: "no-store" }), conversationListSchema);
+      setConversations((old) => mergeLatest(result.conversations, old));
+    } catch (error) {
+      if (!(error instanceof Error)) throw error; // Background refresh; the list stays as it was.
+    }
+  }, []);
+  useEffect(() => {
+    const onVisible = () => { void refresh(); };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    const onMessage = (event: MessageEvent) => {
+      const data: unknown = event.data;
+      if (typeof data !== "object" || data === null || (data as { type?: unknown }).type !== "nakama:open-chat") return;
+      const id = chatDeepLink(`?chat=${String((data as { conversationId?: unknown }).conversationId ?? "")}`);
+      if (!id) return;
+      void refresh(true);
+      openFromNotification.current(id);
+    };
+    navigator.serviceWorker?.addEventListener("message", onMessage);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+      navigator.serviceWorker?.removeEventListener("message", onMessage);
+    };
+  }, [refresh]);
+
+  // Opening a report counts as seeing it (and any older report).
+  useEffect(() => {
+    if (active && isWorkoutReport(active)) markSeen(active.created_at);
+  }, [active, markSeen]);
+
+  // Closing the Chats list counts as having seen everything it showed.
+  const wasShowingHistory = useRef(false);
+  useEffect(() => {
+    if (wasShowingHistory.current && !showHistory) markSeen(latestCreatedAt(conversations, null));
+    wasShowingHistory.current = showHistory;
+  }, [showHistory, conversations, markSeen]);
 
   async function run(operation: () => Promise<void>) {
     if (action.current || busy) return;
@@ -160,13 +230,19 @@ export function ChatPanel({ onSettings, onSignOut, signingOut, accountError, use
     });
   }, [list]);
   const disabled = busy || acting || loading;
+  openFromNotification.current = (id) => { void run(() => open(id)); };
+  const newReports = newReportIds(conversations, seenAt, active?.id ?? null);
+  const latestReport = conversations.find((chat) => newReports.has(chat.id));
 
   return (
     <main ref={shell} className="chat-shell mx-auto flex h-dvh w-full max-w-5xl flex-col">
       <header className="chat-header flex shrink-0 flex-wrap items-center gap-3 border-b border-line bg-surface px-4 py-3">
         <BrandMark className="brand-mark h-10 w-10" />
         <div className="mr-auto min-w-0"><h1 className="text-xl font-black tracking-tight">Nakama</h1><p className="max-w-56 truncate text-xs text-ink-muted">{active?.title ?? "Your training companion"}</p></div>
-        <button onClick={() => setShowHistory((value) => !value)} aria-expanded={showHistory} className="min-h-11 text-sm underline underline-offset-4">Chats</button>
+        <button onClick={() => setShowHistory((value) => !value)} aria-expanded={showHistory} className="min-h-11 text-sm underline underline-offset-4">
+          Chats{newReports.size > 0 && <span className="ml-1 rounded-full bg-brand px-1.5 py-0.5 text-xs font-semibold text-canvas no-underline">
+            {newReports.size}<span className="sr-only"> new workout {newReports.size === 1 ? "report" : "reports"}</span></span>}
+        </button>
         <button onClick={() => { void run(create); }} disabled={disabled} className="min-h-11 text-sm underline underline-offset-4 disabled:opacity-50">New chat</button>
         <details className="account-menu"><summary aria-label="Account menu">•••</summary><div>
         <button onClick={() => { void run(async () => onSettings()); }} disabled={disabled} className="min-h-11 text-sm underline underline-offset-4 disabled:opacity-50">Settings</button>
@@ -180,13 +256,18 @@ export function ChatPanel({ onSettings, onSignOut, signingOut, accountError, use
         </div></details>
       </header>
       {(error || accountError || storageError) && <p role="alert" className="shrink-0 bg-red-50 p-4 text-sm text-red-700">{error ?? accountError ?? storageError}</p>}
+      {latestReport && !showHistory && <div role="status" className="flex shrink-0 items-center gap-3 border-b border-line bg-brand-soft px-4 py-2 text-sm">
+        <span className="min-w-0 flex-1 truncate">New workout report: {latestReport.title.replace(/^Workout report:\s*/, "")}</span>
+        <button disabled={disabled} onClick={() => { void run(() => open(latestReport.id)); }}
+          className="min-h-11 shrink-0 font-semibold underline underline-offset-4 disabled:opacity-50">Open</button>
+      </div>}
       {showHistory && <nav aria-label="Saved conversations" className="max-h-[45dvh] shrink-0 space-y-2 overflow-auto border-b border-line bg-surface p-4">
         <h2 className="font-semibold">Your chats</h2>
         {conversations.length === 0 && <p className="text-sm text-ink-muted">Start a new chat to save your first conversation.</p>}
         {conversations.map((chat) => <button key={chat.id} disabled={disabled} aria-current={active?.id === chat.id ? "page" : undefined}
           onClick={() => { void run(() => open(chat.id)); }}
           className="block min-h-11 w-full rounded-xl border border-line p-3 text-left text-sm aria-[current=page]:bg-brand-soft disabled:opacity-50">
-          <span className="block break-words font-medium">{chat.title}</span>
+          <span className="block break-words font-medium">{chat.title}{newReports.has(chat.id) && <span className="ml-2 rounded-full bg-brand px-2 py-0.5 text-xs font-semibold text-canvas">New</span>}</span>
           <time className="text-xs text-ink-muted" dateTime={chat.updated_at}>{new Date(chat.updated_at).toLocaleString()}</time>
         </button>)}
         {hasMore && <button disabled={disabled} onClick={() => { void run(async () => { await list(page + 1, true); }); }} className="min-h-11 text-sm underline">Load older chats</button>}

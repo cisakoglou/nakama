@@ -2,6 +2,7 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import { HevyConnectionError, loadHevyConnection, storage } from "@/lib/hevy-connection";
+import { notifyReportReady, type ReportReadyPayload } from "@/lib/push";
 import type { Database } from "@/lib/supabase/database";
 import {
   generateWorkoutReport, hevyWorkoutSchema, renderWorkoutReport, type HevyWorkout,
@@ -79,9 +80,12 @@ function parseWorkout(value: unknown): HevyWorkout | null {
   return parsed.success ? parsed.data : null;
 }
 
+function workoutName(workout: HevyWorkout) {
+  return workout.title.replace(/\s+/g, " ").trim() || "Workout";
+}
+
 function reportTitle(workout: HevyWorkout) {
-  const name = workout.title.replace(/\s+/g, " ").trim() || "Workout";
-  return `Workout report: ${name}`.slice(0, 80).replace(/[\uD800-\uDBFF]$/, "").trim();
+  return `Workout report: ${workoutName(workout)}`.slice(0, 80).replace(/[\uD800-\uDBFF]$/, "").trim();
 }
 
 function dbFailure(code: string) {
@@ -121,7 +125,9 @@ export function workoutReportQueue(db: Db) {
 }
 
 type Queue = ReturnType<typeof workoutReportQueue>;
-type Outcome = { status: "delivered" | "skipped"; reason: string | null } | { status: "failed"; reason: FailureCode; error: unknown };
+type Outcome = { status: "delivered"; reason: null; title: string } | { status: "skipped"; reason: string }
+  | { status: "failed"; reason: FailureCode; error: unknown };
+type Notify = (userId: string, payload: ReportReadyPayload) => Promise<unknown>;
 
 async function processJob(queue: Queue, job: Job): Promise<Outcome> {
   let apiKey: string;
@@ -165,10 +171,21 @@ async function processJob(queue: Queue, job: Job): Promise<Outcome> {
     if (!(error instanceof WorkoutReportStorageError)) throw error;
     return { status: "failed", reason: "delivery_failed", error };
   }
-  return { status: "delivered", reason: null };
+  return { status: "delivered", reason: null, title: workoutName(workout).slice(0, 80) };
 }
 
-export async function drainWorkoutReports(db: Db = storage(), now: () => Date = () => new Date()) {
+// Fire-and-forget so a slow push service never delays other jobs; failures are logged only.
+function notifyInBackground(notify: Notify, job: Job, title: string) {
+  void Promise.resolve()
+    .then(() => notify(job.user_id, { conversationId: job.conversation_id, title }))
+    .catch((error: unknown) => {
+      console.error("Workout report notification failed", { error: error instanceof Error ? error.message : "unknown" });
+    });
+}
+
+export async function drainWorkoutReports(
+  db: Db = storage(), now: () => Date = () => new Date(), notify: Notify = notifyReportReady,
+) {
   const queue = workoutReportQueue(db);
   const summary: WorkoutReportDrainSummary = { claimed: 0, delivered: 0, failed: 0, exhausted: 0, skipped: 0 };
   for (let index = 0; index < MAX_JOBS_PER_DRAIN; index++) {
@@ -178,6 +195,9 @@ export async function drainWorkoutReports(db: Db = storage(), now: () => Date = 
     const outcome = await processJob(queue, job);
     await queue.finish(job, outcome.status, outcome.reason, now());
     summary[outcome.status]++;
+    // Notify only after the job is durably marked delivered: delivered jobs are never reclaimed, and a
+    // retry that hits the 23505 path means the earlier attempt stopped before this point, so it never notified.
+    if (outcome.status === "delivered") notifyInBackground(notify, job, outcome.title);
     if (outcome.status !== "failed") continue;
     const exhausted = job.attempts >= MAX_REPORT_ATTEMPTS;
     console.error(exhausted ? "Workout report retries exhausted" : "Workout report attempt failed", {
