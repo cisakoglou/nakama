@@ -74,8 +74,18 @@ async function exerciseHistory(apiKey: string, workout: HevyWorkout) {
     while (next < targets.length) {
       const index = next++;
       const [templateId, title] = targets[index];
-      const parsed = exerciseHistorySchema.safeParse(
-        await hevyGet(apiKey, `/exercise_history/${encodeURIComponent(templateId)}`, params));
+      let body: unknown;
+      try {
+        body = await hevyGet(apiKey, `/exercise_history/${encodeURIComponent(templateId)}`, params);
+      } catch (error) {
+        // No history, or a deleted/custom template: this exercise just has nothing to compare.
+        if (error instanceof HevyRequestError && error.status === 404) {
+          responses[index] = { templateId, title, entries: [] };
+          continue;
+        }
+        throw error;
+      }
+      const parsed = exerciseHistorySchema.safeParse(body);
       if (!parsed.success) throw new HevyRequestError(200);
       responses[index] = { templateId, title, entries: parsed.data.exercise_history };
     }

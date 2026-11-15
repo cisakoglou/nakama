@@ -195,6 +195,19 @@ describe("workout report worker", () => {
     fetchMock.mockImplementation(base);
   });
 
+  it("treats a 404 for one exercise's history as empty without failing the report", async () => {
+    const db = fakeDb();
+    db.enqueue();
+    const fresh = workoutsById[workoutId] as ReturnType<typeof workout>;
+    fresh.exercises.push({ ...fresh.exercises[0], index: 1, title: "Custom", exercise_template_id: "CUSTOM" });
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) =>
+      new URL(input).pathname === "/v1/exercise_history/CUSTOM" ? new Response("", { status: 404 }) : base(input, init));
+    expect(await drain(db)).toMatchObject({ delivered: 1, failed: 0 });
+    expect((mocks.generate.mock.calls[0][1] as { id: string }[]).map((w) => w.id).sort()).toEqual(["h1", "h2", "h3"]);
+    fetchMock.mockImplementation(base);
+  });
+
   it("fails with hevy_unavailable when an exercise history request errors, then recovers", async () => {
     const db = fakeDb();
     db.enqueue();
