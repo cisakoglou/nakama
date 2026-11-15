@@ -30,20 +30,24 @@ beforeEach(() => {
 
 describe("webhook token settings", () => {
   it("returns the token once as a complete Authorization header with the configured webhook URL", async () => {
-    mocks.create.mockResolvedValue(token);
+    mocks.create.mockResolvedValue({ token, created_at: "2026-11-15T10:00:00.000Z" });
     const response = await PUT(request("PUT"));
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(await response.json()).toEqual({
-      webhook: { configured: true, url: "https://nakama.test/api/hevy/webhook", authorization: `Bearer ${token}` },
+      webhook: {
+        configured: true, url: "https://nakama.test/api/hevy/webhook", created_at: "2026-11-15T10:00:00.000Z",
+        last_received_at: null, authorization: `Bearer ${token}`,
+      },
     });
     expect(mocks.create).toHaveBeenCalledWith(userId);
   });
 
   it("never returns the token from status checks", async () => {
-    mocks.status.mockResolvedValue({ configured: true, created_at: "2026-11-13T00:00:00Z" });
+    const status = { configured: true, created_at: "2026-11-13T00:00:00Z", last_received_at: "2026-11-14T08:30:00Z" };
+    mocks.status.mockResolvedValue(status);
     const body = await (await GET(request("GET", null))).json();
-    expect(body).toEqual({ webhook: { configured: true, created_at: "2026-11-13T00:00:00Z", url: "https://nakama.test/api/hevy/webhook" } });
+    expect(body).toEqual({ webhook: { ...status, url: "https://nakama.test/api/hevy/webhook" } });
   });
 
   it("requires a Hevy connection before creating a token", async () => {
@@ -59,7 +63,11 @@ describe("webhook token settings", () => {
   });
 
   it("revokes the token for the signed-in user only", async () => {
-    expect((await DELETE(request("DELETE"))).status).toBe(200);
+    const response = await DELETE(request("DELETE"));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      webhook: { configured: false, url: "https://nakama.test/api/hevy/webhook", created_at: null, last_received_at: null },
+    });
     expect(mocks.revoke).toHaveBeenCalledWith(userId);
   });
 

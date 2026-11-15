@@ -36,10 +36,13 @@ export async function PUT(request: NextRequest) {
   const access = await requireBetaUser(request);
   if (!access.ok) return access.response;
   try {
-    const token = await createWebhookToken(access.user.id);
-    if (!token) return access.session.json({ error: "Connect Hevy before setting up workout reports." }, 409);
+    const created = await createWebhookToken(access.user.id);
+    if (!created) return access.session.json({ error: "Connect Hevy before setting up workout reports." }, 409);
     return access.session.json({
-      webhook: { configured: true, url: webhookUrl(request), authorization: `Bearer ${token}` },
+      webhook: {
+        configured: true, url: webhookUrl(request), created_at: created.created_at, last_received_at: null,
+        authorization: `Bearer ${created.token}`,
+      },
     });
   } catch (error) {
     if (!(error instanceof WebhookStorageError)) throw error;
@@ -53,7 +56,9 @@ export async function DELETE(request: NextRequest) {
   if (!access.ok) return access.response;
   try {
     await revokeWebhookToken(access.user.id);
-    return access.session.json({ webhook: { configured: false, url: webhookUrl(request) } });
+    return access.session.json({
+      webhook: { configured: false, url: webhookUrl(request), created_at: null, last_received_at: null },
+    });
   } catch (error) {
     if (!(error instanceof WebhookStorageError)) throw error;
     return storageError(access);
