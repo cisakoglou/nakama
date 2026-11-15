@@ -60,10 +60,21 @@ export async function webhookTokenStatus(userId: string) {
     db.from("hevy_connections").select("revision").eq("user_id", userId).maybeSingle(),
   ]);
   if (error || connectionError) throw storageFailure((error ?? connectionError)!.code);
+  const configured = Boolean(token && connection && token.connection_revision === connection.revision);
   return {
-    configured: Boolean(token && connection && token.connection_revision === connection.revision),
+    configured,
     created_at: token?.created_at ?? null,
+    last_received_at: configured ? await lastWebhookDelivery(db, userId, token!.connection_revision, token!.created_at) : null,
   };
+}
+
+// Most recent job queued through the current header: same connection revision, created after the token.
+async function lastWebhookDelivery(db: ReturnType<typeof serverStorage>, userId: string, revision: string, since: string) {
+  const { data, error } = await db.from("workout_reports").select("created_at")
+    .eq("user_id", userId).eq("connection_revision", revision).gte("created_at", since)
+    .order("created_at", { ascending: false }).limit(1).maybeSingle();
+  if (error) throw storageFailure(error.code);
+  return data?.created_at ?? null;
 }
 
 export async function createWebhookToken(userId: string) {
@@ -73,12 +84,13 @@ export async function createWebhookToken(userId: string) {
   if (error) throw storageFailure(error.code);
   if (!connection) return null;
   const token = `nkwh_${randomBytes(32).toString("base64url")}`;
+  const createdAt = new Date().toISOString();
   const { error: saveError } = await db.from("hevy_webhook_tokens").upsert({
     user_id: userId, token_hash: hashWebhookToken(token), connection_revision: connection.revision,
-    created_at: new Date().toISOString(),
+    created_at: createdAt,
   });
   if (saveError) throw storageFailure(saveError.code);
-  return token;
+  return { token, created_at: createdAt };
 }
 
 export async function revokeWebhookToken(userId: string) {

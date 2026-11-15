@@ -370,6 +370,10 @@ Set it up per account:
    working immediately; update Hevy). **Turn off workout reports** revokes it.
    Replacing or disconnecting the Hevy key also invalidates it.
 
+Settings show whether Hevy has reached Nakama through the current header:
+`last_received_at` is the time of the newest queued workout for the current
+Hevy connection since the header was created (`null` while still waiting).
+
 The token identifies the account; the payload never selects the owner. The
 webhook route verifies the token, accepts at most 4 KB of JSON with a UUID
 `workoutId`, durably inserts a queued job, and only then returns 200. Database
