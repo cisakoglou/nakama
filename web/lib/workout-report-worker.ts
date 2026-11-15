@@ -4,7 +4,7 @@ import { z } from "zod";
 import { HevyConnectionError, loadHevyConnection, storage } from "@/lib/hevy-connection";
 import type { Database } from "@/lib/supabase/database";
 import {
-  generateWorkoutReport, hevyWorkoutSchema, renderWorkoutReport, type HevyWorkout,
+  generateWorkoutReport, hevyWorkoutSchema, parseHistoryWorkout, renderWorkoutReport, type HevyWorkout,
 } from "@/lib/workout-report";
 
 const HEVY_API = "https://api.hevyapp.com/v1";
@@ -71,7 +71,7 @@ async function recentWorkouts(apiKey: string) {
     workouts.push(...parsed.data.workouts);
     if (page >= parsed.data.page_count) break;
   }
-  return workouts.map(parseWorkout).filter((workout): workout is HevyWorkout => workout !== null);
+  return workouts.map(parseHistoryWorkout).filter((workout): workout is HevyWorkout => workout !== null);
 }
 
 function parseWorkout(value: unknown): HevyWorkout | null {
