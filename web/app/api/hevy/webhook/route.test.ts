@@ -5,6 +5,7 @@ import { POST } from "./route";
 
 const mocks = vi.hoisted(() => ({
   resolve: vi.fn(),
+  diagnose: vi.fn(),
   enqueue: vi.fn(),
   wake: vi.fn(),
   fetch: vi.fn(),
@@ -14,6 +15,7 @@ vi.mock("server-only", () => ({}));
 vi.mock("@/lib/hevy-webhook", async (original) => ({
   ...await original<typeof import("@/lib/hevy-webhook")>(),
   resolveWebhookOwner: mocks.resolve,
+  diagnoseWebhookRejection: mocks.diagnose,
   enqueueWorkoutReport: mocks.enqueue,
   WebhookStorageError: mocks.StorageError,
 }));
@@ -67,6 +69,8 @@ beforeEach(() => {
   mocks.fetch.mockImplementation(() => { throw new Error("Webhook acknowledgement must not fetch upstream data."); });
   vi.stubGlobal("fetch", mocks.fetch);
   vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  vi.spyOn(console, "info").mockImplementation(() => {});
 });
 afterEach(() => {
   vi.restoreAllMocks();
@@ -265,5 +269,57 @@ describe("Hevy webhook acknowledgement", () => {
       if (!cancel.mock.calls.length) bodyController.close();
       await pending;
     }
+  });
+});
+
+describe("Hevy webhook rejection logging", () => {
+  function logged() {
+    return JSON.stringify(vi.mocked(console.warn).mock.calls);
+  }
+
+  it("logs a malformed header's shape and header names without the token", async () => {
+    const response = await POST(request(payload, `Bearer Bearer ${token}`));
+    expect(response.status).toBe(401);
+    expect(console.warn).toHaveBeenCalledWith("Hevy webhook rejected", expect.objectContaining({
+      reason: "malformed_header",
+      header: expect.objectContaining({ bearerPrefixes: 2, hasTokenPrefix: false }),
+      headerNames: expect.arrayContaining(["authorization", "content-type"]),
+    }));
+    expect(logged()).not.toContain(token.slice(5));
+  });
+
+  it("logs a missing header", async () => {
+    expect((await POST(request(payload, null))).status).toBe(401);
+    expect(console.warn).toHaveBeenCalledWith("Hevy webhook rejected", expect.objectContaining({ reason: "missing_header" }));
+  });
+
+  it("logs why a well-formed token has no owner, keeping the 401", async () => {
+    mocks.resolve.mockResolvedValue(null);
+    mocks.diagnose.mockResolvedValue({ reason: "connection_changed", userId: owner.userId });
+    expect((await POST(request())).status).toBe(401);
+    expect(console.warn).toHaveBeenCalledWith("Hevy webhook rejected", { reason: "connection_changed", userId: owner.userId });
+    expect(mocks.enqueue).not.toHaveBeenCalled();
+    expect(logged()).not.toContain(token.slice(5));
+  });
+
+  it("still answers 401 when the diagnosis itself fails", async () => {
+    mocks.resolve.mockResolvedValue(null);
+    mocks.diagnose.mockRejectedValue(new mocks.StorageError("down"));
+    expect((await POST(request())).status).toBe(401);
+    expect(console.warn).toHaveBeenCalledWith("Hevy webhook rejected", expect.objectContaining({ reason: "owner_not_found" }));
+  });
+
+  it("logs body keys, not values, for an unexpected payload", async () => {
+    const response = await POST(request(JSON.stringify({ workout_id: "secret-value", extra: 1 })));
+    expect(response.status).toBe(400);
+    expect(console.warn).toHaveBeenCalledWith("Hevy webhook rejected", {
+      reason: "invalid_payload", userId: owner.userId, bodyKeys: ["workout_id", "extra"],
+    });
+    expect(logged()).not.toContain("secret-value");
+  });
+
+  it("logs accepted deliveries", async () => {
+    expect((await POST(request())).status).toBe(200);
+    expect(console.info).toHaveBeenCalledWith("Hevy webhook accepted", { userId: owner.userId, queued: true });
   });
 });

@@ -34,6 +34,41 @@ export function hashWebhookToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
 
+// Describes a rejected Authorization header for logs without revealing any of its value.
+export function describeAuthorizationShape(header: string | null) {
+  if (header === null) return { present: false };
+  const value = header.trim();
+  const rest = value.replace(/^Bearer\s+/i, "");
+  return {
+    present: true,
+    length: value.length,
+    bearerPrefixes: (value.match(/bearer\s+/gi) ?? []).length,
+    hasTokenPrefix: rest.startsWith("nkwh_"),
+    tokenLength: rest.length,
+    innerWhitespace: /\s/.test(rest),
+  };
+}
+
+export type WebhookRejection = {
+  reason: "unknown_token" | "connection_missing" | "connection_changed" | "owner_not_eligible";
+  userId?: string;
+};
+
+// Explains why a well-formed token resolved to no owner (hevy_webhook_owner also requires an active invitation).
+export async function diagnoseWebhookRejection(token: string, signal: AbortSignal): Promise<WebhookRejection> {
+  const db = serverStorage();
+  const { data: row, error } = await db.from("hevy_webhook_tokens").select("user_id, connection_revision")
+    .eq("token_hash", hashWebhookToken(token)).abortSignal(signal).maybeSingle();
+  if (error) throw storageFailure(error.code);
+  if (!row) return { reason: "unknown_token" };
+  const { data: connection, error: connectionError } = await db.from("hevy_connections").select("revision")
+    .eq("user_id", row.user_id).abortSignal(signal).maybeSingle();
+  if (connectionError) throw storageFailure(connectionError.code);
+  if (!connection) return { reason: "connection_missing", userId: row.user_id };
+  if (connection.revision !== row.connection_revision) return { reason: "connection_changed", userId: row.user_id };
+  return { reason: "owner_not_eligible", userId: row.user_id };
+}
+
 export async function resolveWebhookOwner(token: string, signal: AbortSignal): Promise<WebhookOwner | null> {
   const { data, error } = await serverStorage()
     .rpc("hevy_webhook_owner", { p_token_hash: hashWebhookToken(token) }).abortSignal(signal);
