@@ -2,6 +2,7 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import { HevyConnectionError, loadHevyConnection, storage } from "@/lib/hevy-connection";
+import { WORKOUT_REPORT_FIRST_ATTEMPT_DELAY_MS } from "@/lib/hevy-webhook";
 import { notifyReportReady, type ReportReadyPayload } from "@/lib/push";
 import type { Database } from "@/lib/supabase/database";
 import {
@@ -11,6 +12,12 @@ import {
 const HEVY_API = "https://api.hevyapp.com/v1";
 export const MAX_REPORT_ATTEMPTS = 5;
 const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 30 * 60_000, 2 * 60 * 60_000];
+// A 404 usually means Hevy's API has not caught up with its webhook yet, so it is retried. Three attempts span
+// ~6 minutes after the webhook (20 s, +1 min, +5 min); a workout still missing then was almost certainly deleted,
+// and a report arriving hours later (the remaining backoff steps) is not worth the extra Hevy calls.
+export const WORKOUT_NOT_FOUND_MAX_ATTEMPTS = 3;
+// Wake drains run just after a new job becomes due, with slack for app/database clock skew.
+const WAKE_DELAY_MS = WORKOUT_REPORT_FIRST_ATTEMPT_DELAY_MS + 1_000;
 const HISTORY_DAYS = 90;
 const HISTORY_MAX_EXERCISES = 20;
 const HISTORY_CONCURRENCY = 3;
@@ -18,7 +25,7 @@ const MAX_JOBS_PER_DRAIN = 50;
 const SWEEP_INTERVAL_MS = 30_000;
 
 type Db = SupabaseClient<Database>;
-type FailureCode = "connection_unavailable" | "hevy_unavailable" | "invalid_workout" | "report_failed" | "delivery_failed";
+type FailureCode = "connection_unavailable" | "hevy_unavailable" | "workout_not_found" | "invalid_workout" | "report_failed" | "delivery_failed";
 type Job = Database["public"]["Functions"]["claim_next_workout_report"]["Returns"][number];
 
 export type WorkoutReportDrainSummary = {
@@ -166,7 +173,11 @@ async function processJob(queue: Queue, job: Job): Promise<Outcome> {
     workout = parseWorkout(await hevyGet(apiKey, `/workouts/${encodeURIComponent(job.workout_id)}`));
   } catch (error) {
     if (!(error instanceof HevyRequestError)) throw error;
-    if (error.status === 404) return { status: "skipped", reason: "workout_not_found" };
+    if (error.status === 404) {
+      return job.attempts >= WORKOUT_NOT_FOUND_MAX_ATTEMPTS
+        ? { status: "skipped", reason: "workout_not_found" }
+        : { status: "failed", reason: "workout_not_found", error };
+    }
     return { status: "failed", reason: "hevy_unavailable", error };
   }
   if (!workout || workout.id !== job.workout_id) return { status: "failed", reason: "invalid_workout", error: null };
@@ -213,8 +224,16 @@ export async function drainWorkoutReports(
     summary[outcome.status]++;
     // Notify only after the job is durably marked delivered: delivered jobs are never reclaimed, and a
     // retry that hits the 23505 path means the earlier attempt stopped before this point, so it never notified.
-    if (outcome.status === "delivered") notifyInBackground(notify, job, outcome.title);
-    if (outcome.status !== "failed") continue;
+    const context = { userId: job.user_id, workoutId: job.workout_id, attempt: job.attempts };
+    if (outcome.status === "delivered") {
+      console.info("Workout report delivered", context);
+      notifyInBackground(notify, job, outcome.title);
+      continue;
+    }
+    if (outcome.status === "skipped") {
+      console.warn("Workout report skipped", { ...context, reason: outcome.reason });
+      continue;
+    }
     const exhausted = job.attempts >= MAX_REPORT_ATTEMPTS;
     console.error(exhausted ? "Workout report retries exhausted" : "Workout report attempt failed", {
       userId: job.user_id, workoutId: job.workout_id, code: outcome.reason, attempt: job.attempts,
@@ -228,7 +247,9 @@ export async function drainWorkoutReports(
 // Next.js bundles instrumentation and route handlers separately, so worker state lives on globalThis.
 const worker = ((globalThis as { __nakamaWorkoutReportWorker?: {
   draining: Promise<void> | null; rerun: boolean; sweep: ReturnType<typeof setInterval> | null;
+  wakes?: Set<ReturnType<typeof setTimeout>>;
 } }).__nakamaWorkoutReportWorker ??= { draining: null, rerun: false, sweep: null });
+const wakes = (worker.wakes ??= new Set());
 
 function drainSafely() {
   if (worker.draining) {
@@ -249,10 +270,16 @@ function drainSafely() {
   return worker.draining;
 }
 
-// Nudges the in-process worker after a durable enqueue. The job is already committed,
-// so a lost nudge only delays processing until the next sweep.
+// Nudges the in-process worker after a durable enqueue, timed for when the new job becomes due. The job is
+// already committed, so a lost nudge only delays processing until the next sweep.
 export function wakeWorkoutReportWorker() {
-  if (worker.sweep) void drainSafely();
+  if (!worker.sweep) return;
+  const timer = setTimeout(() => {
+    wakes.delete(timer);
+    void drainSafely();
+  }, WAKE_DELAY_MS);
+  timer.unref();
+  wakes.add(timer);
 }
 
 export function startWorkoutReportWorker() {
@@ -265,5 +292,7 @@ export function startWorkoutReportWorker() {
 export function stopWorkoutReportWorker() {
   if (worker.sweep) clearInterval(worker.sweep);
   worker.sweep = null;
+  for (const timer of wakes) clearTimeout(timer);
+  wakes.clear();
   return worker.draining ?? Promise.resolve();
 }

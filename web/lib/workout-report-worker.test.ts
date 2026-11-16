@@ -3,7 +3,9 @@ import { HevyConnectionError } from "@/lib/hevy-connection";
 import type { WorkoutReportRow } from "@/lib/supabase/database";
 import {
   drainWorkoutReports, MAX_REPORT_ATTEMPTS, startWorkoutReportWorker, stopWorkoutReportWorker, wakeWorkoutReportWorker,
+  WORKOUT_NOT_FOUND_MAX_ATTEMPTS,
 } from "./workout-report-worker";
+import { WORKOUT_REPORT_FIRST_ATTEMPT_DELAY_MS } from "./hevy-webhook";
 
 const mocks = vi.hoisted(() => ({
   load: vi.fn(), generate: vi.fn(), storage: vi.fn(), notify: vi.fn(), actual: undefined as undefined | ((...args: never[]) => unknown),
@@ -67,9 +69,9 @@ function fakeDb(failInsert?: string) {
     return { data: [{ user_id, workout_id, connection_revision, conversation_id, attempts }], error: null };
   };
   let conversations = 0;
-  const enqueue = (userId = owner, id = workoutId, connectionRevision = revision) => tables.workout_reports.push({
+  const enqueue = (userId = owner, id = workoutId, connectionRevision = revision, delayMs = 0) => tables.workout_reports.push({
     user_id: userId, workout_id: id, connection_revision: connectionRevision, status: "queued", attempts: 0,
-    available_at: clock.toISOString(), conversation_id: `00000000-0000-4000-8000-${String(++conversations).padStart(12, "0")}`,
+    available_at: new Date(clock.getTime() + delayMs).toISOString(), conversation_id: `00000000-0000-4000-8000-${String(++conversations).padStart(12, "0")}`,
     last_error: null,
   });
   return { tables, enqueue, client: { from: query, rpc } as never };
@@ -117,6 +119,8 @@ beforeEach(() => {
   clock = new Date("2026-11-13T12:00:00.000Z");
   mocks.generate.mockImplementation(mocks.actual!);
   vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  vi.spyOn(console, "info").mockImplementation(() => {});
   vi.stubGlobal("fetch", fetchMock);
   mocks.load.mockResolvedValue({ apiKey: "personal-key", revision });
   mocks.notify.mockResolvedValue(null);
@@ -247,11 +251,67 @@ describe("workout report worker", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("skips workouts Hevy no longer has", async () => {
+  it("does not fetch a freshly webhooked job until its first-attempt delay has passed", async () => {
+    const db = fakeDb();
+    db.enqueue(owner, workoutId, revision, WORKOUT_REPORT_FIRST_ATTEMPT_DELAY_MS);
+    expect(await drain(db)).toMatchObject({ claimed: 0 });
+    expect(fetchMock).not.toHaveBeenCalled();
+    clock = new Date(clock.getTime() + WORKOUT_REPORT_FIRST_ATTEMPT_DELAY_MS);
+    expect(await drain(db)).toMatchObject({ delivered: 1 });
+  });
+
+  it("retries a workout Hevy does not have yet and delivers once it appears", async () => {
+    const db = fakeDb();
+    db.enqueue();
+    const fresh = workoutsById[workoutId];
+    delete workoutsById[workoutId];
+    expect(await drain(db)).toMatchObject({ failed: 1, skipped: 0 });
+    expect(db.tables.workout_reports[0]).toMatchObject({
+      status: "failed", attempts: 1, last_error: "workout_not_found", available_at: "2026-11-13T12:01:00.000Z",
+    });
+    expect(console.error).toHaveBeenCalledWith("Workout report attempt failed", expect.objectContaining({
+      userId: owner, workoutId, code: "workout_not_found", attempt: 1,
+    }));
+    workoutsById[workoutId] = fresh;
+    clock = new Date(clock.getTime() + 60_000);
+    expect(await drain(db)).toMatchObject({ delivered: 1 });
+    expect(db.tables.workout_reports[0]).toMatchObject({ status: "delivered", attempts: 2, last_error: null });
+    expect(console.info).toHaveBeenCalledWith("Workout report delivered", { userId: owner, workoutId, attempt: 2 });
+    await vi.waitFor(() => expect(mocks.notify).toHaveBeenCalledTimes(1));
+  });
+
+  it("skips and logs a workout Hevy still does not have after the not-found attempt cap", async () => {
     const db = fakeDb();
     db.enqueue(owner, "missing");
-    expect(await drain(db)).toMatchObject({ skipped: 1 });
-    expect(db.tables.workout_reports[0]).toMatchObject({ status: "skipped", last_error: "workout_not_found" });
+    for (let attempt = 1; attempt < WORKOUT_NOT_FOUND_MAX_ATTEMPTS; attempt++) {
+      expect(await drain(db)).toMatchObject({ failed: 1, skipped: 0 });
+      clock = new Date(Date.parse(db.tables.workout_reports[0].available_at as string));
+    }
+    expect(await drain(db)).toMatchObject({ failed: 0, skipped: 1 });
+    expect(db.tables.workout_reports[0]).toMatchObject({
+      status: "skipped", attempts: WORKOUT_NOT_FOUND_MAX_ATTEMPTS, last_error: "workout_not_found",
+    });
+    expect(console.warn).toHaveBeenCalledWith("Workout report skipped", {
+      userId: owner, workoutId: "missing", attempt: WORKOUT_NOT_FOUND_MAX_ATTEMPTS, reason: "workout_not_found",
+    });
+    clock = new Date(clock.getTime() + 86_400_000);
+    expect(await drain(db)).toMatchObject({ claimed: 0 });
+    expect(mocks.notify).not.toHaveBeenCalled();
+  });
+
+  it("logs skips and deliveries with ids only, never keys or workout content", async () => {
+    const db = fakeDb();
+    db.enqueue();
+    db.enqueue(owner, "second", "00000000-0000-4000-8000-0000000000bb");
+    expect(await drain(db)).toMatchObject({ delivered: 1, skipped: 1 });
+    expect(console.info).toHaveBeenCalledWith("Workout report delivered", { userId: owner, workoutId, attempt: 1 });
+    expect(console.warn).toHaveBeenCalledWith("Workout report skipped", {
+      userId: owner, workoutId: "second", attempt: 1, reason: "connection_changed",
+    });
+    const logged = JSON.stringify([vi.mocked(console.info).mock.calls, vi.mocked(console.warn).mock.calls]);
+    expect(logged).not.toContain("personal-key");
+    expect(logged).not.toContain("Legs");
+    expect(logged).not.toContain("Squat");
   });
 
   it("backs off failed reports, retries when due, and stops at the attempt limit", async () => {
@@ -326,7 +386,7 @@ describe("report-ready notifications", () => {
 
   it("does not notify for skipped or failed jobs", async () => {
     const db = fakeDb();
-    db.enqueue(owner, "missing");
+    db.enqueue(owner, "missing", "00000000-0000-4000-8000-0000000000bb");
     db.enqueue(owner, workoutId);
     mocks.generate.mockImplementation(() => { throw new Error("boom"); });
     expect(await drain(db)).toMatchObject({ skipped: 1, failed: 1 });
@@ -350,7 +410,10 @@ describe("report-ready notifications", () => {
 });
 
 describe("in-process worker lifecycle", () => {
-  afterEach(async () => { await stopWorkoutReportWorker(); });
+  afterEach(async () => {
+    await stopWorkoutReportWorker();
+    vi.useRealTimers();
+  });
 
   it("does nothing on wake until started, then drains on start and on each wake", async () => {
     const db = fakeDb();
@@ -362,10 +425,28 @@ describe("in-process worker lifecycle", () => {
 
     startWorkoutReportWorker();
     await vi.waitFor(() => expect(db.tables.workout_reports[0].status).toBe("delivered"));
-    db.enqueue(owner, "second");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    db.enqueue(owner, "second", revision, WORKOUT_REPORT_FIRST_ATTEMPT_DELAY_MS);
     workoutsById.second = { ...workout("second", 13, 105) };
     wakeWorkoutReportWorker();
+    // The wake waits for the job's first-attempt delay instead of draining immediately.
+    await vi.advanceTimersByTimeAsync(WORKOUT_REPORT_FIRST_ATTEMPT_DELAY_MS - 1_000);
+    expect(db.tables.workout_reports[1].status).toBe("queued");
+    clock = new Date(clock.getTime() + WORKOUT_REPORT_FIRST_ATTEMPT_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(2_000);
     await vi.waitFor(() => expect(db.tables.workout_reports[1].status).toBe("delivered"));
+  });
+
+  it("drops pending wakes when stopped", async () => {
+    const db = fakeDb();
+    mocks.storage.mockReturnValue(db.client);
+    startWorkoutReportWorker();
+    await vi.waitFor(() => expect(mocks.storage).toHaveBeenCalledTimes(1));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    wakeWorkoutReportWorker();
+    await stopWorkoutReportWorker();
+    await vi.advanceTimersByTimeAsync(WORKOUT_REPORT_FIRST_ATTEMPT_DELAY_MS * 2);
+    expect(mocks.storage).toHaveBeenCalledTimes(1);
   });
 
   it("keeps running after a drain failure so the next wake or sweep retries", async () => {
@@ -375,7 +456,9 @@ describe("in-process worker lifecycle", () => {
     const db = fakeDb();
     mocks.storage.mockReturnValue(db.client);
     db.enqueue();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     wakeWorkoutReportWorker();
+    await vi.advanceTimersByTimeAsync(WORKOUT_REPORT_FIRST_ATTEMPT_DELAY_MS + 1_000);
     await vi.waitFor(() => expect(db.tables.workout_reports[0].status).toBe("delivered"));
   });
 });

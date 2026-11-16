@@ -60,7 +60,7 @@ export type Database = {
       };
       workout_reports: {
         Row: WorkoutReportRow;
-        Insert: { user_id: string; workout_id: string; connection_revision: string };
+        Insert: { user_id: string; workout_id: string; connection_revision: string; available_at?: string };
         Update: {
           status?: WorkoutReportRow["status"]; last_error?: string | null; available_at?: string; updated_at?: string;
         };

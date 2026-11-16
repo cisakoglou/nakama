@@ -9,16 +9,20 @@ vi.mock("@/lib/hevy-connection", () => {
   class HevyConnectionError extends Error {}
   const from = (table: string) => {
     const query: Record<string, unknown> = {};
-    for (const method of ["select", "eq", "gte", "order", "limit"]) {
+    for (const method of ["select", "eq", "gte", "order", "limit", "upsert"]) {
       query[method] = (...args: unknown[]) => { state.calls.push({ table, method, args }); return query; };
     }
     query.maybeSingle = async () => state.results[table];
+    query.abortSignal = async () => state.results[table];
     return query;
   };
   return { HevyConnectionError, storage: () => ({ from }) };
 });
 
-import { hashWebhookToken, webhookFingerprint, webhookTokenStatus, WebhookStorageError } from "./hevy-webhook";
+import {
+  enqueueWorkoutReport, hashWebhookToken, WORKOUT_REPORT_FIRST_ATTEMPT_DELAY_MS, webhookFingerprint, webhookTokenStatus,
+  WebhookStorageError,
+} from "./hevy-webhook";
 
 const userId = "00000000-0000-4000-8000-000000000001";
 const ok = (data: unknown): Result => ({ data, error: null });
@@ -72,5 +76,30 @@ describe("webhookFingerprint", () => {
     const fingerprint = webhookFingerprint(hashWebhookToken(token));
     expect(fingerprint).toMatch(/^[0-9a-f]{8}$/);
     expect(token).not.toContain(fingerprint);
+  });
+});
+
+describe("enqueueWorkoutReport", () => {
+  it("queues the job to become due only after the first-attempt delay, ignoring duplicates", async () => {
+    vi.useFakeTimers({ now: new Date("2026-11-16T10:00:00.000Z"), toFake: ["Date"] });
+    state.results.workout_reports = ok([{ workout_id: "w1" }]);
+    const result = await enqueueWorkoutReport({ userId, revision: "rev-2" }, "w1", new AbortController().signal);
+    vi.useRealTimers();
+    expect(result).toEqual({ queued: true });
+    expect(WORKOUT_REPORT_FIRST_ATTEMPT_DELAY_MS).toBeGreaterThanOrEqual(20_000);
+    expect(WORKOUT_REPORT_FIRST_ATTEMPT_DELAY_MS).toBeLessThanOrEqual(30_000);
+    const upsert = state.calls.find((call) => call.method === "upsert")!;
+    expect(upsert.args).toEqual([
+      {
+        user_id: userId, workout_id: "w1", connection_revision: "rev-2",
+        available_at: new Date(Date.parse("2026-11-16T10:00:00.000Z") + WORKOUT_REPORT_FIRST_ATTEMPT_DELAY_MS).toISOString(),
+      },
+      { onConflict: "user_id,workout_id", ignoreDuplicates: true },
+    ]);
+  });
+
+  it("reports a duplicate delivery as not queued", async () => {
+    state.results.workout_reports = ok([]);
+    expect(await enqueueWorkoutReport({ userId, revision: "rev-2" }, "w1", new AbortController().signal)).toEqual({ queued: false });
   });
 });

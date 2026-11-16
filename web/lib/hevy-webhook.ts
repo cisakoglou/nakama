@@ -7,6 +7,10 @@ export class WebhookStorageError extends Error {}
 // Hevy expects a 200 within five seconds; storage work must finish well inside that.
 export const WEBHOOK_STORAGE_DEADLINE_MS = 3_000;
 
+// Hevy fires the webhook as a workout is saved; its API can briefly 404 the workout or serve it before it settles,
+// so a new job only becomes due after this delay (the worker's wake and 30 s sweep both respect available_at).
+export const WORKOUT_REPORT_FIRST_ATTEMPT_DELAY_MS = 20_000;
+
 export type WebhookOwner = { userId: string; revision: string };
 
 const TOKEN_PATTERN = /^nkwh_[A-Za-z0-9_-]{43}$/;
@@ -88,7 +92,11 @@ export async function resolveWebhookOwner(token: string, signal: AbortSignal): P
 export async function enqueueWorkoutReport(owner: WebhookOwner, workoutId: string, signal: AbortSignal) {
   const { data, error } = await serverStorage().from("workout_reports")
     .upsert(
-      { user_id: owner.userId, workout_id: workoutId, connection_revision: owner.revision },
+      {
+        user_id: owner.userId, workout_id: workoutId, connection_revision: owner.revision,
+        available_at: new Date(Date.now() + WORKOUT_REPORT_FIRST_ATTEMPT_DELAY_MS).toISOString(),
+      },
+      // Duplicate deliveries are ignored, so a redelivered webhook never pushes back an existing job.
       { onConflict: "user_id,workout_id", ignoreDuplicates: true },
     )
     .select("workout_id").abortSignal(signal);
