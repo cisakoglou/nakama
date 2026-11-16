@@ -66,7 +66,7 @@ describe("webhook token settings", () => {
     const response = await DELETE(request("DELETE"));
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
-      webhook: { configured: false, url: "https://nakama.test/api/hevy/webhook", created_at: null, last_received_at: null },
+      webhook: { configured: false, url: "https://nakama.test/api/hevy/webhook", created_at: null, fingerprint: null, last_received_at: null },
     });
     expect(mocks.revoke).toHaveBeenCalledWith(userId);
   });

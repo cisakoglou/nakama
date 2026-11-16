@@ -18,7 +18,7 @@ vi.mock("@/lib/hevy-connection", () => {
   return { HevyConnectionError, storage: () => ({ from }) };
 });
 
-import { webhookTokenStatus, WebhookStorageError } from "./hevy-webhook";
+import { hashWebhookToken, webhookFingerprint, webhookTokenStatus, WebhookStorageError } from "./hevy-webhook";
 
 const userId = "00000000-0000-4000-8000-000000000001";
 const ok = (data: unknown): Result => ({ data, error: null });
@@ -26,7 +26,7 @@ const ok = (data: unknown): Result => ({ data, error: null });
 beforeEach(() => {
   state.calls = [];
   state.results = {
-    hevy_webhook_tokens: ok({ connection_revision: "rev-2", created_at: "2026-11-13T00:00:00Z" }),
+    hevy_webhook_tokens: ok({ connection_revision: "rev-2", created_at: "2026-11-13T00:00:00Z", token_hash: `0a1b2c3d${"e".repeat(56)}` }),
     hevy_connections: ok({ revision: "rev-2" }),
     workout_reports: ok({ created_at: "2026-11-14T08:30:00Z" }),
   };
@@ -35,7 +35,7 @@ beforeEach(() => {
 describe("webhookTokenStatus", () => {
   it("reports the latest delivery received through the current header", async () => {
     expect(await webhookTokenStatus(userId)).toEqual({
-      configured: true, created_at: "2026-11-13T00:00:00Z", last_received_at: "2026-11-14T08:30:00Z",
+      configured: true, created_at: "2026-11-13T00:00:00Z", fingerprint: "0a1b2c3d", last_received_at: "2026-11-14T08:30:00Z",
     });
     const reports = state.calls.filter((c) => c.table === "workout_reports").map(({ method, args }) => [method, ...args]);
     expect(reports).toEqual([
@@ -63,5 +63,14 @@ describe("webhookTokenStatus", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     state.results.workout_reports = { data: null, error: { code: "57014" } };
     await expect(webhookTokenStatus(userId)).rejects.toBeInstanceOf(WebhookStorageError);
+  });
+});
+
+describe("webhookFingerprint", () => {
+  it("is the first 8 hex characters of the token hash, never the token", () => {
+    const token = `nkwh_${"b".repeat(43)}`;
+    const fingerprint = webhookFingerprint(hashWebhookToken(token));
+    expect(fingerprint).toMatch(/^[0-9a-f]{8}$/);
+    expect(token).not.toContain(fingerprint);
   });
 });

@@ -10,6 +10,7 @@ const statusSchema = z.object({
     url: z.string().url(),
     created_at: z.string().nullable().optional(),
     last_received_at: z.string().nullable().optional(),
+    fingerprint: z.string().nullable().optional(),
   }),
 });
 const createdSchema = z.object({
@@ -121,6 +122,12 @@ export function WebhookSetupView({ status, created, busy, error, onGenerate, onT
             <span aria-hidden="true" className={`inline-block h-2.5 w-2.5 rounded-full ${dot}`} />
             <span><span className="font-medium">Status:</span> {summary.text}</span>
           </p>
+          {status?.configured && status.fingerprint && (
+            <p className="w-full text-xs text-ink-muted">
+              Header fingerprint: <span className="font-mono">{status.fingerprint}</span> (matches the fingerprint in
+              delivery logs; it is not the header itself)
+            </p>
+          )}
           {status?.configured && (
             <button type="button" onClick={onRefresh} disabled={busy}
               className="min-h-11 text-sm underline underline-offset-4 disabled:opacity-50">Check again</button>

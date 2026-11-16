@@ -34,6 +34,11 @@ export function hashWebhookToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
 
+// Short, non-secret identifier for matching a delivery to a header: 8 hex chars of the token's SHA-256.
+export function webhookFingerprint(tokenHash: string) {
+  return tokenHash.slice(0, 8);
+}
+
 // Describes a rejected Authorization header for logs without revealing any of its value.
 export function describeAuthorizationShape(header: string | null) {
   if (header === null) return { present: false };
@@ -51,22 +56,25 @@ export function describeAuthorizationShape(header: string | null) {
 
 export type WebhookRejection = {
   reason: "unknown_token" | "connection_missing" | "connection_changed" | "owner_not_eligible";
+  fingerprint: string;
   userId?: string;
 };
 
 // Explains why a well-formed token resolved to no owner (hevy_webhook_owner also requires an active invitation).
 export async function diagnoseWebhookRejection(token: string, signal: AbortSignal): Promise<WebhookRejection> {
   const db = serverStorage();
+  const tokenHash = hashWebhookToken(token);
+  const fingerprint = webhookFingerprint(tokenHash);
   const { data: row, error } = await db.from("hevy_webhook_tokens").select("user_id, connection_revision")
-    .eq("token_hash", hashWebhookToken(token)).abortSignal(signal).maybeSingle();
+    .eq("token_hash", tokenHash).abortSignal(signal).maybeSingle();
   if (error) throw storageFailure(error.code);
-  if (!row) return { reason: "unknown_token" };
+  if (!row) return { reason: "unknown_token", fingerprint };
   const { data: connection, error: connectionError } = await db.from("hevy_connections").select("revision")
     .eq("user_id", row.user_id).abortSignal(signal).maybeSingle();
   if (connectionError) throw storageFailure(connectionError.code);
-  if (!connection) return { reason: "connection_missing", userId: row.user_id };
-  if (connection.revision !== row.connection_revision) return { reason: "connection_changed", userId: row.user_id };
-  return { reason: "owner_not_eligible", userId: row.user_id };
+  if (!connection) return { reason: "connection_missing", fingerprint, userId: row.user_id };
+  if (connection.revision !== row.connection_revision) return { reason: "connection_changed", fingerprint, userId: row.user_id };
+  return { reason: "owner_not_eligible", fingerprint, userId: row.user_id };
 }
 
 export async function resolveWebhookOwner(token: string, signal: AbortSignal): Promise<WebhookOwner | null> {
@@ -91,7 +99,7 @@ export async function enqueueWorkoutReport(owner: WebhookOwner, workoutId: strin
 export async function webhookTokenStatus(userId: string) {
   const db = serverStorage();
   const [{ data: token, error }, { data: connection, error: connectionError }] = await Promise.all([
-    db.from("hevy_webhook_tokens").select("connection_revision, created_at").eq("user_id", userId).maybeSingle(),
+    db.from("hevy_webhook_tokens").select("connection_revision, created_at, token_hash").eq("user_id", userId).maybeSingle(),
     db.from("hevy_connections").select("revision").eq("user_id", userId).maybeSingle(),
   ]);
   if (error || connectionError) throw storageFailure((error ?? connectionError)!.code);
@@ -99,6 +107,7 @@ export async function webhookTokenStatus(userId: string) {
   return {
     configured,
     created_at: token?.created_at ?? null,
+    fingerprint: token ? webhookFingerprint(token.token_hash) : null,
     last_received_at: configured ? await lastWebhookDelivery(db, userId, token!.connection_revision, token!.created_at) : null,
   };
 }
@@ -125,7 +134,7 @@ export async function createWebhookToken(userId: string) {
     created_at: createdAt,
   });
   if (saveError) throw storageFailure(saveError.code);
-  return { token, created_at: createdAt };
+  return { token, created_at: createdAt, fingerprint: webhookFingerprint(hashWebhookToken(token)) };
 }
 
 export async function revokeWebhookToken(userId: string) {

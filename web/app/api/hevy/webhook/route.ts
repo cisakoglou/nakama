@@ -69,8 +69,8 @@ export async function POST(request: NextRequest) {
     const owner = await resolveWebhookOwner(token, signal);
     if (!owner) {
       try {
-        const { reason, userId } = await diagnoseWebhookRejection(token, signal);
-        logRejection(reason, { userId });
+        const { reason, ...details } = await diagnoseWebhookRejection(token, signal);
+        logRejection(reason, details);
       } catch {
         logRejection("owner_not_found", { diagnosis: "unavailable" });
       }

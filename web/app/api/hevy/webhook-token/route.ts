@@ -40,7 +40,7 @@ export async function PUT(request: NextRequest) {
     if (!created) return access.session.json({ error: "Connect Hevy before setting up workout reports." }, 409);
     return access.session.json({
       webhook: {
-        configured: true, url: webhookUrl(request), created_at: created.created_at, last_received_at: null,
+        configured: true, url: webhookUrl(request), created_at: created.created_at, fingerprint: created.fingerprint, last_received_at: null,
         authorization: `Bearer ${created.token}`,
       },
     });
@@ -57,7 +57,7 @@ export async function DELETE(request: NextRequest) {
   try {
     await revokeWebhookToken(access.user.id);
     return access.session.json({
-      webhook: { configured: false, url: webhookUrl(request), created_at: null, last_received_at: null },
+      webhook: { configured: false, url: webhookUrl(request), created_at: null, fingerprint: null, last_received_at: null },
     });
   } catch (error) {
     if (!(error instanceof WebhookStorageError)) throw error;

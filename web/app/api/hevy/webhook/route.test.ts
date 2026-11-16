@@ -295,9 +295,9 @@ describe("Hevy webhook rejection logging", () => {
 
   it("logs why a well-formed token has no owner, keeping the 401", async () => {
     mocks.resolve.mockResolvedValue(null);
-    mocks.diagnose.mockResolvedValue({ reason: "connection_changed", userId: owner.userId });
+    mocks.diagnose.mockResolvedValue({ reason: "connection_changed", fingerprint: "0a1b2c3d", userId: owner.userId });
     expect((await POST(request())).status).toBe(401);
-    expect(console.warn).toHaveBeenCalledWith("Hevy webhook rejected", { reason: "connection_changed", userId: owner.userId });
+    expect(console.warn).toHaveBeenCalledWith("Hevy webhook rejected", { reason: "connection_changed", fingerprint: "0a1b2c3d", userId: owner.userId });
     expect(mocks.enqueue).not.toHaveBeenCalled();
     expect(logged()).not.toContain(token.slice(5));
   });
