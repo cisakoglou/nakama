@@ -6,13 +6,14 @@ import {
 } from "./workout-report-worker";
 
 const mocks = vi.hoisted(() => ({
-  load: vi.fn(), generate: vi.fn(), storage: vi.fn(), actual: undefined as undefined | ((...args: never[]) => unknown),
+  load: vi.fn(), generate: vi.fn(), storage: vi.fn(), notify: vi.fn(), actual: undefined as undefined | ((...args: never[]) => unknown),
 }));
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/hevy-connection", async (original) => ({
   ...await original<typeof import("@/lib/hevy-connection")>(),
   loadHevyConnection: mocks.load, storage: mocks.storage,
 }));
+vi.mock("@/lib/push", () => ({ notifyReportReady: mocks.notify }));
 vi.mock("@/lib/workout-report", async (original) => {
   const actual = await original<typeof import("@/lib/workout-report")>();
   mocks.actual = actual.generateWorkoutReport as never;
@@ -108,6 +109,7 @@ beforeEach(() => {
   vi.spyOn(console, "error").mockImplementation(() => {});
   vi.stubGlobal("fetch", fetchMock);
   mocks.load.mockResolvedValue({ apiKey: "personal-key", revision });
+  mocks.notify.mockResolvedValue(null);
   const fresh = workout(workoutId, 12, 102.5);
   workoutsById = { [workoutId]: fresh };
   history = [fresh, workout("later", 14, 110), workout("h3", 9, 100), workout("h2", 6, 100), workout("h1", 3, 97.5)];
@@ -209,6 +211,50 @@ describe("workout report worker", () => {
     workoutsById[workoutId] = workout("someone-else", 12, 100);
     expect(await drain(db)).toMatchObject({ failed: 1 });
     expect(db.tables.workout_reports[0]).toMatchObject({ last_error: "invalid_workout" });
+  });
+});
+
+describe("report-ready notifications", () => {
+  it("notifies once per delivered report with only the conversation id and workout title", async () => {
+    const db = fakeDb();
+    db.enqueue();
+    await drain(db);
+    await vi.waitFor(() => expect(mocks.notify).toHaveBeenCalledTimes(1));
+    expect(mocks.notify).toHaveBeenCalledWith(owner, { conversationId: db.tables.workout_reports[0].conversation_id, title: "Legs" });
+    await drain(db);
+    await Promise.resolve();
+    expect(mocks.notify).toHaveBeenCalledTimes(1);
+  });
+
+  it("notifies on the retry that finds the report already saved, since the earlier attempt never finished", async () => {
+    const db = fakeDb("23505");
+    db.enqueue();
+    expect(await drain(db)).toMatchObject({ delivered: 1 });
+    await vi.waitFor(() => expect(mocks.notify).toHaveBeenCalledTimes(1));
+  });
+
+  it("does not notify for skipped or failed jobs", async () => {
+    const db = fakeDb();
+    db.enqueue(owner, "missing");
+    db.enqueue(owner, workoutId);
+    mocks.generate.mockImplementation(() => { throw new Error("boom"); });
+    expect(await drain(db)).toMatchObject({ skipped: 1, failed: 1 });
+    await Promise.resolve();
+    expect(mocks.notify).not.toHaveBeenCalled();
+  });
+
+  it("never fails, retries or delays a job because of a push failure", async () => {
+    const db = fakeDb();
+    db.enqueue();
+    db.enqueue(other, "second");
+    workoutsById.second = workout("second", 13, 105);
+    mocks.notify.mockImplementationOnce(() => { throw new Error("push exploded"); })
+      .mockImplementationOnce(() => new Promise(() => {}));
+    expect(await drain(db)).toMatchObject({ claimed: 2, delivered: 2, failed: 0 });
+    expect(db.tables.workout_reports.map((r) => r.status)).toEqual(["delivered", "delivered"]);
+    await vi.waitFor(() => expect(console.error).toHaveBeenCalledWith("Workout report notification failed", { error: "push exploded" }));
+    clock = new Date(clock.getTime() + 86_400_000);
+    expect(await drain(db)).toMatchObject({ claimed: 0 });
   });
 });
 

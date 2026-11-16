@@ -115,12 +115,19 @@ Set these values in `web/.env.local`:
 | `SUPABASE_SECRET_KEY` | Server-only Supabase secret key for encrypted credential storage. |
 | `HEVY_CREDENTIAL_ENCRYPTION_KEY` | Server-only base64-encoded 32 random bytes; keep stable across deployments. |
 | `ANTHROPIC_API_KEY` | Server-only Claude provider key. |
+| `VAPID_PUBLIC_KEY` | Optional. Web Push public key for "report ready" notifications (sent to browsers). |
+| `VAPID_PRIVATE_KEY` | Optional, server-only. Web Push private key; keep stable across deployments. |
+| `VAPID_SUBJECT` | Optional. Contact for push services: `mailto:you@example.com` or an `https://` URL. |
 
 Generate the encryption key once with
 `node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"`.
 Store it securely; rotating or losing it makes existing saved Hevy keys
-unreadable and requires users to reconnect. Never prefix server secrets with
-`NEXT_PUBLIC_`. Users enter their own Hevy keys in the authenticated app, not
+unreadable and requires users to reconnect. Generate the VAPID pair once with
+`npx web-push generate-vapid-keys` (from `web`). If any VAPID variable is
+missing, notifications are disabled: settings say they are unavailable and
+reports are still delivered to chats. Rotating the pair silently invalidates
+every saved device; users must turn notifications on again. Never prefix server
+secrets with `NEXT_PUBLIC_`. Users enter their own Hevy keys in the authenticated app, not
 in environment variables.
 
 ```sh
@@ -156,6 +163,10 @@ They do not contact Supabase, Hevy, or Anthropic.
    once, before enabling post-workout reports. It adds hashed per-connection
    webhook tokens, a server-only report job queue, and lets the server role
    insert report chats.
+   Then run
+   [`supabase/migrations/202611150001_push_subscriptions.sql`](supabase/migrations/202611150001_push_subscriptions.sql)
+   once, before enabling report notifications. It adds server-only Web Push
+   subscriptions, capped at the ten newest per account.
 2. Add each approved email through the SQL Editor, replacing the example:
 
    ```sql
@@ -407,8 +418,20 @@ Behavior:
   then logged as exhausted. Jobs abandoned mid-run are reclaimed after ten
   minutes. Workouts no longer in Hevy, or jobs for a replaced or removed
   connection, are marked skipped.
-- **Delivery:** reports appear in the in-app chat list. Nakama does not send
-  push notifications or email for them; those channels are not configured.
+- **Delivery:** reports appear in the in-app chat list. New report chats get a
+  **New** badge and an "Open" banner (tracked per account in this browser's
+  local storage); the list refreshes when the tab regains focus.
+- **Notifications:** in Settings, **Notify me when a report is ready** turns on
+  Web Push for that device (requires the VAPID variables above). After the job
+  is marked delivered, the worker sends `{conversationId, title}` (the workout
+  title only) to each saved device in the background; tapping the notification
+  opens that report. Push failures never fail or retry the report. Each report
+  notifies once: delivered jobs are never reclaimed, and a retry only happens
+  if the earlier attempt stopped before it notified. Devices that the push
+  service reports as gone (404/410), or that fail five times in a row, are
+  removed. Signing out turns notifications off for that device (best effort,
+  never blocks sign-out). **iPhone/iPad:** Web Push works only after **Add to Home Screen**
+  and opening Nakama from that icon (iOS 16.4+).
 
 ## Phone access
 
@@ -419,8 +442,9 @@ keyboard, scrolling, tap-target, overflow, and rotation checks remain in
 [#12](https://github.com/cisakoglou/nakama/issues/12).
 
 For a home-screen shortcut, choose **Add to Home Screen** from the browser's
-share menu or main menu where available. A full PWA manifest, install-icon set,
-and verified standalone launch are still tracked in
+share menu or main menu where available. Nakama ships a web app manifest
+(standalone display) and a minimal service worker used only for notifications;
+a full install-icon set and verified standalone launch are still tracked in
 [#2](https://github.com/cisakoglou/nakama/issues/2). Chat requires internet;
 offline chat is not supported.
 
