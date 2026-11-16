@@ -93,9 +93,19 @@ let workoutsById: Record<string, unknown>;
 let history: unknown[];
 const fetchMock = vi.fn(async (input: URL | string, _init?: RequestInit) => {
   const url = new URL(input);
-  if (url.pathname === "/v1/workouts") {
-    return url.searchParams.get("page") === "1"
-      ? Response.json({ page: 1, page_count: 1, workouts: history }) : new Response("", { status: 404 });
+  if (url.pathname.startsWith("/v1/exercise_history/")) {
+    const templateId = decodeURIComponent(url.pathname.split("/").pop()!);
+    const from = Date.parse(url.searchParams.get("start_date")!);
+    const to = Date.parse(url.searchParams.get("end_date")!);
+    // Like Hevy: one entry per set, filtered by workout start time.
+    const entries = (history as ReturnType<typeof workout>[])
+      .filter((past) => Date.parse(past.start_time) >= from && Date.parse(past.start_time) <= to)
+      .flatMap((past) => past.exercises.filter((e) => e.exercise_template_id === templateId).flatMap((e) => e.sets.map((set) => ({
+        workout_id: past.id, workout_title: past.title, workout_start_time: past.start_time, workout_end_time: past.end_time,
+        exercise_template_id: templateId, weight_kg: set.weight_kg, reps: set.reps, distance_meters: null,
+        duration_seconds: null, rpe: null, custom_metric: null, set_type: set.type,
+      }))));
+    return Response.json({ exercise_history: entries });
   }
   const id = decodeURIComponent(url.pathname.split("/").pop()!);
   return workoutsById[id] ? Response.json(workoutsById[id]) : new Response("", { status: 404 });
@@ -124,12 +134,93 @@ describe("workout report worker", () => {
     const [conversation] = db.tables.chat_conversations as { id: string; user_id: string; title: string; messages: { role: string; content: string }[] }[];
     expect(conversation).toMatchObject({ id: db.tables.workout_reports[0].conversation_id, user_id: owner, title: "Workout report: Legs" });
     expect(conversation.messages).toEqual([expect.objectContaining({ role: "assistant", content: expect.any(String) })]);
-    expect(mocks.generate.mock.calls[0][1].map((w: { id: string }) => w.id)).toEqual(["h3", "h2", "h1"]);
+    expect(mocks.generate.mock.calls[0][1].map((w: { id: string }) => w.id).sort()).toEqual(["h1", "h2", "h3"]);
     expect(mocks.generate.mock.calls[0][2]).toBe("kg");
     expect(db.tables.workout_reports[0]).toMatchObject({ status: "delivered", attempts: 1, last_error: null });
     expect(fetchMock.mock.calls.every(([, init]) => JSON.stringify(init?.headers).includes("personal-key"))).toBe(true);
     expect(await drain(db)).toMatchObject({ claimed: 0 });
     expect(db.tables.chat_conversations).toHaveLength(1);
+  });
+
+  it("fetches 90-day exercise history once per distinct exercise with start and end dates", async () => {
+    const db = fakeDb();
+    db.enqueue();
+    const fresh = workoutsById[workoutId] as ReturnType<typeof workout>;
+    fresh.exercises.push({ ...fresh.exercises[0], index: 1, title: "Bench", exercise_template_id: "BENCH" });
+    await drain(db);
+    const calls = fetchMock.mock.calls.map(([input]) => new URL(input)).filter((url) => url.pathname.startsWith("/v1/exercise_history/"));
+    expect(calls.map((url) => url.pathname).sort()).toEqual(["/v1/exercise_history/BENCH", "/v1/exercise_history/SQUAT"]);
+    for (const url of calls) {
+      expect(url.searchParams.get("start_date")).toBe("2026-08-14T09:00:00.000Z");
+      expect(url.searchParams.get("end_date")).toBe("2026-11-12T09:00:00.000Z");
+    }
+    expect(fetchMock.mock.calls.some(([input]) => new URL(input).pathname === "/v1/workouts")).toBe(false);
+  });
+
+  it("caps exercises at 20 and requests at most 3 histories concurrently", async () => {
+    const db = fakeDb();
+    db.enqueue();
+    const fresh = workoutsById[workoutId] as ReturnType<typeof workout>;
+    fresh.exercises = Array.from({ length: 25 }, (_, i) => ({ ...fresh.exercises[0], index: i, exercise_template_id: `EX${i}` }));
+    let active = 0;
+    let peak = 0;
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (!new URL(input).pathname.startsWith("/v1/exercise_history/")) return base(input, init);
+      active++; peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active--;
+      return base(input, init);
+    });
+    expect(await drain(db)).toMatchObject({ delivered: 1 });
+    const count = fetchMock.mock.calls.filter(([input]) => new URL(input).pathname.startsWith("/v1/exercise_history/")).length;
+    expect(count).toBe(20);
+    expect(peak).toBe(3);
+    fetchMock.mockImplementation(base);
+  });
+
+  it("drops bad sets and entries without discarding the history", async () => {
+    const db = fakeDb();
+    db.enqueue();
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (!new URL(input).pathname.startsWith("/v1/exercise_history/")) return base(input, init);
+      const body = await (await base(input, init)).json() as { exercise_history: (Record<string, unknown> | null)[] };
+      body.exercise_history.push({ workout_id: "bad", reps: 5 }, { ...body.exercise_history[0]!, set_type: "mystery" },
+        { ...body.exercise_history[0]!, reps: "five" }, null);
+      return Response.json(body);
+    });
+    expect(await drain(db)).toMatchObject({ delivered: 1 });
+    const past = mocks.generate.mock.calls[0][1] as { id: string; exercises: { sets: unknown[] }[] }[];
+    expect(past.map((w) => w.id).sort()).toEqual(["h1", "h2", "h3"]);
+    expect(past.every((w) => w.exercises[0].sets.length === 3)).toBe(true);
+    fetchMock.mockImplementation(base);
+  });
+
+  it("treats a 404 for one exercise's history as empty without failing the report", async () => {
+    const db = fakeDb();
+    db.enqueue();
+    const fresh = workoutsById[workoutId] as ReturnType<typeof workout>;
+    fresh.exercises.push({ ...fresh.exercises[0], index: 1, title: "Custom", exercise_template_id: "CUSTOM" });
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) =>
+      new URL(input).pathname === "/v1/exercise_history/CUSTOM" ? new Response("", { status: 404 }) : base(input, init));
+    expect(await drain(db)).toMatchObject({ delivered: 1, failed: 0 });
+    expect((mocks.generate.mock.calls[0][1] as { id: string }[]).map((w) => w.id).sort()).toEqual(["h1", "h2", "h3"]);
+    fetchMock.mockImplementation(base);
+  });
+
+  it("fails with hevy_unavailable when an exercise history request errors, then recovers", async () => {
+    const db = fakeDb();
+    db.enqueue();
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) =>
+      new URL(input).pathname.startsWith("/v1/exercise_history/") ? new Response("", { status: 500 }) : base(input, init));
+    expect(await drain(db)).toMatchObject({ failed: 1 });
+    expect(db.tables.workout_reports[0]).toMatchObject({ last_error: "hevy_unavailable" });
+    fetchMock.mockImplementation(base);
+    clock = new Date(clock.getTime() + 60_000);
+    expect(await drain(db)).toMatchObject({ delivered: 1 });
   });
 
   it("uses each job owner's own Hevy connection and units", async () => {

@@ -5,14 +5,15 @@ import { HevyConnectionError, loadHevyConnection, storage } from "@/lib/hevy-con
 import { notifyReportReady, type ReportReadyPayload } from "@/lib/push";
 import type { Database } from "@/lib/supabase/database";
 import {
-  generateWorkoutReport, hevyWorkoutSchema, renderWorkoutReport, type HevyWorkout,
+  generateWorkoutReport, hevyWorkoutSchema, historyFromExerciseHistory, renderWorkoutReport, type HevyWorkout,
 } from "@/lib/workout-report";
 
 const HEVY_API = "https://api.hevyapp.com/v1";
 export const MAX_REPORT_ATTEMPTS = 5;
 const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 30 * 60_000, 2 * 60 * 60_000];
-const HISTORY_PAGES = 3;
-const HISTORY_LIMIT = 30;
+const HISTORY_DAYS = 90;
+const HISTORY_MAX_EXERCISES = 20;
+const HISTORY_CONCURRENCY = 3;
 const MAX_JOBS_PER_DRAIN = 50;
 const SWEEP_INTERVAL_MS = 30_000;
 
@@ -34,7 +35,7 @@ class HevyRequestError extends Error {
   constructor(public readonly status: number | null) { super(`Hevy request failed (${status ?? "network"})`); }
 }
 
-const workoutsPageSchema = z.object({ page: z.number().int(), page_count: z.number().int(), workouts: z.array(z.unknown()) });
+const exerciseHistorySchema = z.object({ exercise_history: z.array(z.unknown()) });
 
 async function hevyGet(apiKey: string, path: string, params: Record<string, string | number> = {}) {
   const url = new URL(`${HEVY_API}${path}`);
@@ -56,23 +57,42 @@ async function hevyGet(apiKey: string, path: string, params: Record<string, stri
   return response.json() as Promise<unknown>;
 }
 
-async function recentWorkouts(apiKey: string) {
-  const workouts: unknown[] = [];
-  for (let page = 1; page <= HISTORY_PAGES; page++) {
-    let body: unknown;
-    try {
-      body = await hevyGet(apiKey, "/workouts", { page, pageSize: 10 });
-    } catch (error) {
-      // Hevy answers 404 for list pages past the end.
-      if (error instanceof HevyRequestError && error.status === 404 && page > 1) break;
-      throw error;
-    }
-    const parsed = workoutsPageSchema.safeParse(body);
-    if (!parsed.success) throw new HevyRequestError(200);
-    workouts.push(...parsed.data.workouts);
-    if (page >= parsed.data.page_count) break;
+/** True 90-day history per distinct exercise in the workout, grouped into per-workout sessions. */
+async function exerciseHistory(apiKey: string, workout: HevyWorkout) {
+  const start = Date.parse(workout.start_time);
+  const params = {
+    start_date: new Date(start - HISTORY_DAYS * 24 * 60 * 60 * 1000).toISOString(),
+    end_date: new Date(start).toISOString(),
+  };
+  const titles = new Map<string, string>();
+  for (const exercise of workout.exercises) {
+    if (!titles.has(exercise.exercise_template_id)) titles.set(exercise.exercise_template_id, exercise.title);
   }
-  return workouts.map(parseWorkout).filter((workout): workout is HevyWorkout => workout !== null);
+  const targets = [...titles].slice(0, HISTORY_MAX_EXERCISES);
+  const responses: { templateId: string; title: string; entries: unknown[] }[] = new Array(targets.length);
+  let next = 0;
+  const run = async () => {
+    while (next < targets.length) {
+      const index = next++;
+      const [templateId, title] = targets[index];
+      let body: unknown;
+      try {
+        body = await hevyGet(apiKey, `/exercise_history/${encodeURIComponent(templateId)}`, params);
+      } catch (error) {
+        // No history, or a deleted/custom template: this exercise just has nothing to compare.
+        if (error instanceof HevyRequestError && error.status === 404) {
+          responses[index] = { templateId, title, entries: [] };
+          continue;
+        }
+        throw error;
+      }
+      const parsed = exerciseHistorySchema.safeParse(body);
+      if (!parsed.success) throw new HevyRequestError(200);
+      responses[index] = { templateId, title, entries: parsed.data.exercise_history };
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(HISTORY_CONCURRENCY, targets.length) }, run));
+  return historyFromExerciseHistory(responses, workout.id);
 }
 
 function parseWorkout(value: unknown): HevyWorkout | null {
@@ -154,11 +174,7 @@ async function processJob(queue: Queue, job: Job): Promise<Outcome> {
   let content: string;
   try {
     const units = await queue.units(job.user_id);
-    const start = Date.parse(workout.start_time);
-    const history = (await recentWorkouts(apiKey))
-      .filter((past) => past.id !== workout.id && Date.parse(past.start_time) < start)
-      .sort((a, b) => Date.parse(b.start_time) - Date.parse(a.start_time))
-      .slice(0, HISTORY_LIMIT);
+    const history = await exerciseHistory(apiKey, workout);
     content = renderWorkoutReport(generateWorkoutReport(workout, history, units));
   } catch (error) {
     if (error instanceof HevyRequestError) return { status: "failed", reason: "hevy_unavailable", error };
