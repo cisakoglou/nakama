@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import {
   generateWorkoutReport, hevyWorkoutSchema, historyFromExerciseHistory, parseHistoryWorkout, renderWorkoutReport, type HevyWorkout,
 } from "./workout-report";
@@ -46,7 +47,7 @@ describe("workout report comparisons", () => {
     });
     expect(result).not.toHaveProperty("extra");
     expect(result.exercises[0].sets[0]).not.toHaveProperty("extra");
-    expect(generateWorkoutReport(result, []).limitations.join(" ")).toContain("incomplete");
+    expect(generateWorkoutReport(result, []).limitations.join(" ")).toContain("Incomplete");
     expect(hevyWorkoutSchema.safeParse({ ...result, start_time: "not a date" }).success).toBe(false);
     expect(hevyWorkoutSchema.safeParse({
       ...result, exercises: [{ ...strength([8]), sets: [{ type: "normal", reps: Infinity }] }],
@@ -61,7 +62,7 @@ describe("workout report comparisons", () => {
     expect(report.summary).toContain("1 normal working set.");
     expect(report.achievements).toEqual([]);
     expect(report.patterns).toEqual([]);
-    expect(report.limitations[0]).toContain("Not enough comparable history");
+    expect(report.limitations[0]).toContain("Incomplete or unsupported");
     expect(generateWorkoutReport(workout(10, []), []).summary).toContain("0 exercises");
   });
 
@@ -73,9 +74,8 @@ describe("workout report comparisons", () => {
     expect(report.achievements[0]).toContain("estimated 1RM 79.2 kg vs 76 kg (+4.2%)");
     expect(report.achievements[0]).toContain("top set 62.5 kg x 8 vs 60 kg x 8");
     expect(report.achievements[0]).toContain("total volume 1312.5 kg vs 1380 kg");
-    expect(report.limitations.join(" ")).toContain("estimate");
-    expect(report.limitations.join(" ")).not.toContain("Not enough comparable history");
-    expect(renderWorkoutReport(report)).toContain("What went well");
+    expect(report.limitations).toEqual([]);
+    expect(renderWorkoutReport(report)).toContain("Estimated 1RM");
   });
 
   it("finds gains while excluding warmup and non-normal sets", () => {
@@ -128,8 +128,7 @@ describe("workout report comparisons", () => {
     const report = generateWorkoutReport(workout(10, [strength([10, 10])]), [workout(9, [strength([8, 8], 50, "different")])]);
     expect(report.achievements).toEqual([]);
     expect(report.patterns).toEqual([]);
-    expect(report.limitations[0]).toContain("Not enough comparable history");
-    expect(report.limitations.join(" ")).toContain("first time logging this exercise in the last 90 days");
+    expect(report.limitations.join(" ")).toContain("First time logging this exercise in the last 90 days");
   });
 
   it("does not infer gains from a different exercise", () => {
@@ -157,14 +156,14 @@ describe("workout report comparisons", () => {
     const trend = generateWorkoutReport(current, [
       workout(7, [strength([9, 9])]), workout(9, [strength([7, 7])]), workout(8, [strength([8, 8])]),
     ]);
-    expect(trend.patterns[0]).toContain("decreasing estimated 1RM across 4 sessions");
+    expect(trend.patterns[0]).toContain("Decreasing estimated 1RM across 4 sessions");
     expect(trend.patterns[0]).not.toMatch(/injur|overtrain|danger/i);
   });
 
   it("identifies positive trends only with three prior consistent sessions", () => {
     const current = workout(10, [strength([10, 10])]);
     const history = [workout(9, [strength([9, 9])]), workout(8, [strength([8, 8])]), workout(7, [strength([7, 7])])];
-    expect(generateWorkoutReport(current, history).patterns[0]).toContain("improving estimated 1RM");
+    expect(generateWorkoutReport(current, history).patterns[0]).toContain("Improving estimated 1RM");
     expect(generateWorkoutReport(current, history.slice(0, 2)).patterns.join(" ")).not.toContain("across 4");
     history[1] = workout(8, [strength([10, 10])]);
     expect(generateWorkoutReport(current, history).patterns.join(" ")).not.toContain("across 4");
@@ -186,7 +185,7 @@ describe("workout report comparisons", () => {
     expect(report.patterns.join(" ")).not.toContain("across 4");
     const oldOnly = generateWorkoutReport(current, [old]);
     expect(oldOnly.achievements).toEqual([]);
-    expect(oldOnly.limitations.join(" ")).toContain("first time logging");
+    expect(oldOnly.limitations.join(" ")).toContain("First time logging");
   });
 
   it("does not match repeated exercise entries", () => {
@@ -194,7 +193,7 @@ describe("workout report comparisons", () => {
       workout(10, [strength([10]), strength([10])]), [workout(9, [strength([8])])],
     );
     expect(report.achievements).toEqual([]);
-    expect(report.limitations.join(" ")).toContain("repeated exercise entries");
+    expect(report.limitations.join(" ")).toContain("Repeated exercise entries");
   });
 
   it("still counts a history workout containing an unknown set type", () => {
@@ -217,7 +216,6 @@ describe("workout report comparisons", () => {
   it("compares recorded pace only for matching exercise and distance/set layouts", () => {
     const report = generateWorkoutReport(workout(10, [cardio(1500)]), [workout(9, [cardio(1650)])]);
     expect(report.achievements[0]).toContain("5:00 /km recorded pace vs 5:30 /km");
-    expect(report.limitations.join(" ")).toContain("activity titles do not prove a run");
     for (const previous of [
       cardio(3000, 10000),
       { ...cardio(1650), exercise_template_id: "different-activity" },
@@ -232,7 +230,7 @@ describe("workout report comparisons", () => {
     const report = generateWorkoutReport(workout(10, [cardio(1800)]), [
       workout(9, [cardio(1700)]), workout(8, [cardio(1600)]), workout(7, [cardio(1500)]),
     ]);
-    expect(report.patterns[0]).toContain("slower recorded pace across 4");
+    expect(report.patterns[0]).toContain("Slower recorded pace across 4");
     expect(report.achievements).toEqual([]);
   });
 
@@ -254,7 +252,7 @@ describe("workout report comparisons", () => {
     expect(report.achievements).toEqual([]);
     expect(report.patterns[0]).toContain("No notable change");
     const unchanged = generateWorkoutReport(workout(10, [strength([8])]), [workout(9, [strength([8])])]);
-    expect(unchanged.patterns[0]).toContain("does not establish a plateau");
+    expect(unchanged.patterns[0]).toContain("No notable change");
   });
 
   it("renders bounded Markdown and escapes untrusted workout/exercise text", () => {
@@ -263,12 +261,12 @@ describe("workout report comparisons", () => {
       [workout(9, [strength([8])])],
     );
     const rendered = renderWorkoutReport(report);
-    expect(rendered).toContain("### What went well");
+    expect(rendered).toContain("### Bench press");
     expect(rendered).not.toContain("[click]");
     expect(rendered).not.toContain("<script>");
     expect(rendered).not.toContain("\n# injected");
-    report.limitations.push("x".repeat(10000));
-    expect(renderWorkoutReport(report).length).toBeLessThanOrEqual(6000);
+    report.exercises[0].lines.push("x".repeat(30000));
+    expect(renderWorkoutReport(report).length).toBeLessThanOrEqual(20000);
   });
 });
 
@@ -317,7 +315,7 @@ describe("3-month average and best", () => {
   it("makes no history claims for a first-time exercise", () => {
     const report = generateWorkoutReport(workout(10, [bench(60)]), [workout(9, [strength([5], 50, "squat")])]);
     expect(report.achievements).toEqual([]);
-    expect(report.limitations.join(" ")).toContain("first time logging this exercise");
+    expect(report.limitations.join(" ")).toContain("First time logging this exercise");
   });
 
   it("displays averages and bests in lb", () => {
@@ -326,14 +324,11 @@ describe("3-month average and best", () => {
     expect(report.achievements[0]).toContain("previous 128.6 lb, 9 Nov");
   });
 
-  it("stays within the render cap and documents the 90-day window", () => {
+  it("stays within the render cap", () => {
     const many = Array.from({ length: 20 }, (_, i) => strength([5, 5, 5], 60 + i, `ex${i}`));
     const past = Array.from({ length: 6 }, (_, d) => workout(d + 1, many.map((e) => ({ ...e, sets: e.sets.map((s) => ({ ...s, weight_kg: 40 })) }))));
     const rendered = renderWorkoutReport(generateWorkoutReport(workout(10, many), past));
-    expect(rendered.length).toBeLessThanOrEqual(6000);
-    const limits = renderWorkoutReport(generateWorkoutReport(workout(10, [bench(60)]), [workout(9, [bench(50)])]));
-    expect(limits).toContain("last 90 days");
-    expect(limits).toContain("at least 3 previous sessions");
+    expect(rendered.length).toBeLessThanOrEqual(20000);
   });
 
   it("adapts exercise_history sets into sessions, dropping bad sets and the current workout", () => {
@@ -345,5 +340,103 @@ describe("3-month average and best", () => {
       entry("a", 1), entry("a", 1), entry("a", 1, { reps: "x" }), entry("a", 1, { set_type: "bogus" }), entry("cur", 2), null, entry("b", 3),
     ] }], "cur");
     expect(sessions.map((w) => [w.id, w.exercises[0].sets.length])).toEqual([["a", 2], ["b", 1]]);
+  });
+});
+
+const chartSchema = z.object({
+  v: z.literal(1),
+  title: z.string().min(1).max(80),
+  current_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  series: z.array(z.object({
+    key: z.enum(["volume", "max_weight", "total_reps"]),
+    label: z.string().min(1).max(40),
+    unit: z.enum(["kg", "lb", "reps"]),
+    points: z.array(z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), value: z.number().finite().min(0) }).strict()).min(2).max(60),
+  }).strict()).min(1).max(2),
+}).strict();
+
+function chartsIn(markdown: string) {
+  return [...markdown.matchAll(/```nakama-chart\n([^\n]*)\n```/g)].map((match) => chartSchema.parse(JSON.parse(match[1])));
+}
+
+describe("chart blocks", () => {
+  const bench = (weight: number, reps = [5, 5, 5], id = "bench") => strength(reps, weight, id);
+
+  it("charts volume and max weight per session, oldest first, ending with the current workout", () => {
+    const report = generateWorkoutReport(workout(10, [bench(62.5, [8, 7, 6])]), [
+      workout(9, [bench(60, [8, 8, 7])]), workout(3, [bench(55, [5])]),
+    ]);
+    const rendered = renderWorkoutReport(report);
+    const [chart] = chartsIn(rendered);
+    expect(chart.title).toBe("Bench press");
+    expect(chart.current_date).toBe("2026-11-10");
+    expect(chart.series.map((s) => s.key)).toEqual(["volume", "max_weight"]);
+    expect(chart.series[0].points).toEqual([
+      { date: "2026-11-03", value: 275 }, { date: "2026-11-09", value: 1380 }, { date: "2026-11-10", value: 1312.5 },
+    ]);
+    expect(chart.series[1].points.map((p) => p.value)).toEqual([55, 60, 62.5]);
+    expect(chart.series.every((s) => s.unit === "kg")).toBe(true);
+    // Block sits directly under its exercise's bullets.
+    expect(rendered).toMatch(/### Bench press\n\n- [^\n]*\n\n```nakama-chart\n/);
+  });
+
+  it("uses lb values rounded to one decimal", () => {
+    const report = generateWorkoutReport(workout(10, [bench(60, [5])]), [workout(9, [bench(50, [5])])], "lb");
+    const [chart] = chartsIn(renderWorkoutReport(report));
+    expect(chart.series[0].unit).toBe("lb");
+    expect(chart.series[0].points.map((p) => p.value)).toEqual([551.2, 661.4]);
+    expect(chart.series[1].points.map((p) => p.value)).toEqual([110.2, 132.3]);
+  });
+
+  it("charts total reps for bodyweight exercises", () => {
+    const report = generateWorkoutReport(workout(10, [bench(0, [12, 10])]), [workout(9, [bench(0, [10, 10, 8])])]);
+    const [chart] = chartsIn(renderWorkoutReport(report));
+    expect(chart.series).toHaveLength(1);
+    expect(chart.series[0]).toMatchObject({ key: "total_reps", unit: "reps" });
+    expect(chart.series[0].points.map((p) => p.value)).toEqual([28, 22]);
+  });
+
+  it("does not chart cardio, a first-time exercise, or repeated entries", () => {
+    expect(renderWorkoutReport(generateWorkoutReport(workout(10, [cardio(1500)]), [workout(9, [cardio(1650)])]))).not.toContain("nakama-chart");
+    const first = renderWorkoutReport(generateWorkoutReport(workout(10, [bench(60)]), [workout(9, [bench(50, [5], "other")])]));
+    expect(first).not.toContain("nakama-chart");
+    expect(first).toContain("First time logging this exercise in the last 90 days.");
+    expect(renderWorkoutReport(generateWorkoutReport(workout(10, [bench(60), bench(60)]), [workout(9, [bench(50)])]))).not.toContain("nakama-chart");
+  });
+
+  it("caps charts at 8 exercises in workout order and 60 points", () => {
+    const names = Array.from({ length: 10 }, (_, i) => ({ ...bench(60), title: `Ex ${i}`, exercise_template_id: `e${i}` }));
+    const history = [workout(9, names.map((e) => ({ ...e })))];
+    const charts = chartsIn(renderWorkoutReport(generateWorkoutReport(workout(10, names), history)));
+    expect(charts.map((c) => c.title)).toEqual(names.slice(0, 8).map((e) => e.title));
+
+    const day = (n: number) => new Date(Date.UTC(2026, 10, 10) - n * 86400000).toISOString().slice(0, 10);
+    const long = Array.from({ length: 70 }, (_, n) => ({
+      ...workout(1, [bench(50)], `h${n}`),
+      start_time: `${day(n + 1)}T10:00:00Z`, end_time: `${day(n + 1)}T11:00:00Z`,
+    }));
+    const [one] = chartsIn(renderWorkoutReport(generateWorkoutReport(workout(10, [bench(60)]), long)));
+    expect(one.series[0].points).toHaveLength(60);
+    expect(one.series[0].points.at(-1)?.date).toBe("2026-11-10");
+  });
+
+  it("never emits Comparison limits or generic boilerplate", () => {
+    const rendered = renderWorkoutReport(generateWorkoutReport(workout(10, [bench(60), cardio(1500)]), [workout(9, [bench(50), cardio(1650)])]));
+    expect(rendered).not.toMatch(/Comparison limits|diagnos|not a health assessment|Epley/i);
+  });
+
+  it("drops whole trailing charts, never cutting inside a block, when over the size cap", () => {
+    const report = generateWorkoutReport(workout(10, [bench(60), { ...bench(60), title: "Squat", exercise_template_id: "squat" }]), [
+      workout(9, [bench(50), { ...bench(50), title: "Squat", exercise_template_id: "squat" }]),
+    ]);
+    const full = renderWorkoutReport(report);
+    expect(chartsIn(full)).toHaveLength(2);
+    const firstChart = chartsIn(full)[0];
+    report.exercises[0].lines.push("y".repeat(20000 - full.length + 200 - 0));
+    const trimmed = renderWorkoutReport(report);
+    expect(trimmed.length).toBeLessThanOrEqual(20000);
+    expect(chartsIn(trimmed).length).toBeLessThan(2);
+    expect((trimmed.match(/```/g) ?? []).length % 2).toBe(0);
+    expect(firstChart.title).toBe("Bench press");
   });
 });
