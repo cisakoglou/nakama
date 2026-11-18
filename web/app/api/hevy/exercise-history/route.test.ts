@@ -21,7 +21,6 @@ let hevyStatus: number;
 const fetchMock = vi.fn(async (input: URL | string, init?: RequestInit) => {
   const url = new URL(input);
   if (hevyStatus !== 200) return new Response("", { status: hevyStatus });
-  if (url.pathname.startsWith("/v1/exercise_templates/")) return Response.json({ id: "BENCH_1", title: "Bench Press (Barbell)" });
   void init;
   return Response.json({ exercise_history: history });
 });
@@ -89,7 +88,9 @@ it("uses only the signed-in user's key and returns weekly best sessions for 9m",
   expect(new Headers(call.init?.headers).get("api-key")).toBe("personal-key");
   const body = rangeResponseSchema.parse(await response.json());
   expect(body).toMatchObject({ range: "9m", granularity: "week" });
-  expect(body.chart).toMatchObject({ v: 2, exercise_template_id: "BENCH_1", title: "Bench Press (Barbell)", current_date: "2026-11-18" });
+  expect(body.chart).toMatchObject({ v: 2, exercise_template_id: "BENCH_1", title: "Exercise", current_date: "2026-11-18" });
+  // One Hevy request per toggle: no template lookup for the title.
+  expect(fetchMock.mock.calls.map(([input]) => new URL(input).pathname)).toEqual(["/v1/exercise_history/BENCH_1"]);
   expect(body.chart.series[0].points).toEqual([{ date: "2026-03-02", value: 550 }, { date: "2026-11-16", value: 300 }]);
   expect(body.chart.series[1].points).toEqual([{ date: "2026-03-02", value: 55 }, { date: "2026-11-16", value: 60 }]);
 });

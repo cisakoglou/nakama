@@ -17,7 +17,7 @@ export function ReportGuide() {
         <dt>PR</dt>
         <dd>A personal record: this workout beat every previous session of the exercise you have logged.</dd>
         <dt>Charts</dt>
-        <dd>Each dot is a session and the large diamond is this workout. Longer ranges (9M, 1Y) say “Best session per week”: there each dot is your best session of that week.</dd>
+        <dd>Each point on a line is a session and the large diamond is this workout. Longer ranges (9M, 1Y) say “Best session per week”: there each point is your best session of that week, and the diamond marks this workout’s week.</dd>
         <dt>Not counted</dt>
         <dd>Warm-up, drop and failure sets are left out, so only your normal working sets count.</dd>
       </dl>

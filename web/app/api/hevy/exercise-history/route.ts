@@ -39,18 +39,8 @@ async function hevyGet(apiKey: string, path: string, params: Record<string, stri
 }
 
 const historySchema = z.object({ exercise_history: z.array(z.unknown()) });
-const templateSchema = z.object({ title: z.string() });
-
-/** Template title for the chart; the renderer keeps its own block title, so failures fall back quietly. */
-async function templateTitle(apiKey: string, templateId: string) {
-  try {
-    const parsed = templateSchema.safeParse(await hevyGet(apiKey, `/exercise_templates/${encodeURIComponent(templateId)}`));
-    return parsed.success ? parsed.data.title : "Exercise";
-  } catch (error) {
-    if (!(error instanceof HevyUnavailable)) throw error;
-    return "Exercise";
-  }
-}
+/** The renderer keeps the report's own title, so no extra Hevy request is spent on the template name. */
+const PLACEHOLDER_TITLE = "Exercise";
 
 export async function GET(request: NextRequest) {
   const access = await requireBetaUser(request);
@@ -85,20 +75,16 @@ export async function GET(request: NextRequest) {
 
   const start = rangeStart(end, range);
   let entries: unknown[];
-  let title: string;
   try {
-    const [history, name] = await Promise.all([
-      hevyGet(apiKey, `/exercise_history/${encodeURIComponent(template)}`, hevyWindow(start, end)).catch((error) => {
+    const history = await hevyGet(apiKey, `/exercise_history/${encodeURIComponent(template)}`, hevyWindow(start, end))
+      .catch((error) => {
         // Hevy answers 404 when an exercise has no history.
         if (error instanceof HevyUnavailable && error.status === 404) return { exercise_history: [] };
         throw error;
-      }),
-      templateTitle(apiKey, template),
-    ]);
+      });
     const parsed = historySchema.safeParse(history);
     if (!parsed.success) throw new HevyUnavailable(200);
     entries = parsed.data.exercise_history;
-    title = name;
   } catch (error) {
     if (!(error instanceof HevyUnavailable)) throw error;
     console.error("Hevy exercise history request failed", { status: error.status });
@@ -106,7 +92,7 @@ export async function GET(request: NextRequest) {
   }
 
   const result = buildRangeChart({
-    sessions: sessionsFromHistory(entries, template, start, end), range, end, templateId: template, title, units,
+    sessions: sessionsFromHistory(entries, template, start, end), range, end, templateId: template, title: PLACEHOLDER_TITLE, units,
   });
   if (!result) return fail("No sessions of this exercise in this range.", 404);
   const response = access.session.json(result);

@@ -3,6 +3,7 @@
 import React from "react";
 import { z } from "zod";
 import { readApiResponse } from "@/lib/api-response";
+import { isoWeekMonday } from "@/lib/exercise-series";
 
 // Mirrors CHART-CONTRACT.md (v1) and CHART-CONTRACT-v2.md exactly. Strict: unknown fields reject the whole block.
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
@@ -71,6 +72,7 @@ const PLOT_H = 104;
 const DIAMOND = 9; // half-diagonal of the current-session marker (~2x the hollow points)
 const RING = 13; // half-diagonal of its ink halo; the canvas-filled band between them is the gap
 const INSET = RING + 2; // keeps every marker, halo included, inside the plot box
+const LINE_ONLY_ABOVE = 20; // points
 
 // "Total reps", not "Total reps (reps)".
 const seriesHeading = (s: Series) => s.unit === "reps" ? s.label : `${s.label} (${s.unit})`;
@@ -91,14 +93,18 @@ function SeriesChart({ block, series, id, granularity = "session" }: {
   const y = (v: number) => flat ? PLOT_H / 2 : INSET + (PLOT_H - 2 * INSET) * (1 - (v - min) / (max - min));
   const first = points[0];
   const last = points[points.length - 1];
-  const currentIndex = last.date === block.current_date ? points.length - 1 : -1;
-  const dotR = points.length > 30 ? 2.5 : 3.5;
+  // The latest point is "this workout": its own date, or for weekly points the Monday of its ISO week.
+  const currentKey = granularity === "week" ? isoWeekMonday(block.current_date) : block.current_date;
+  const currentIndex = last.date === currentKey ? points.length - 1 : -1;
+  // Dense charts draw the line only; the table still lists every point.
+  const showDots = points.length <= LINE_ONLY_ABOVE;
+  const dotR = 3.5;
   const titleId = `${id}-title`;
   const descId = `${id}-desc`;
   const span = granularity === "week"
     ? `${points.length} ${points.length === 1 ? "week" : "weeks"} (best session per week)`
     : `${points.length} ${points.length === 1 ? "session" : "sessions"}`;
-  const desc = `${label} over ${span}, from ${formatValue(first.value, unit)} on ${formatDate(first.date)} to ${formatValue(last.value, unit)} on ${formatDate(last.date)}. Lowest ${formatValue(min, unit)}, highest ${formatValue(max, unit)}.${currentIndex >= 0 ? " Latest session highlighted." : ""}`;
+  const desc = `${label} over ${span}, from ${formatValue(first.value, unit)} on ${formatDate(first.date)} to ${formatValue(last.value, unit)} on ${formatDate(last.date)}. Lowest ${formatValue(min, unit)}, highest ${formatValue(max, unit)}.${currentIndex >= 0 ? granularity === "week" ? " This workout's week highlighted." : " Latest session highlighted." : ""}`;
   const cy = y(last.value);
 
   return (
@@ -122,7 +128,7 @@ function SeriesChart({ block, series, id, granularity = "session" }: {
             <line x1="100%" x2="100%" y1={0} y2={cy - RING - 3} className="report-chart-leader" />}
           {points.slice(1).map((p, i) => <line key={i} x1={pct(x(i))} y1={y(points[i].value)} x2={pct(x(i + 1))} y2={y(p.value)}
             className="report-chart-line" />)}
-          {points.map((p, i) => i === currentIndex ? null :
+          {showDots && points.map((p, i) => i === currentIndex ? null :
             <circle key={i} cx={pct(x(i))} cy={y(p.value)} r={dotR} className="report-chart-dot" />)}
           {currentIndex >= 0 &&
             // Nested svg places the marker at a % x; the diamond is drawn around that origin in px.

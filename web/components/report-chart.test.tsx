@@ -235,8 +235,28 @@ describe("v2 charts with range toggle", () => {
     expect(html).toContain("Last 9 months · Best session per week");
     expect(html).toContain("Total volume over 2 weeks (best session per week)");
     expect(html).toContain("<th scope=\"col\">Week of</th>");
-    // The diamond only marks a point dated current_date; weekly points are dated Monday.
+    // Weekly: the diamond marks the week containing current_date (2026-11-18 is in the week of Monday 16 Nov).
+    expect(html.match(/report-chart-marker/g)).toHaveLength(2);
+    expect(html).toContain("This workout&#x27;s week highlighted.");
+    expect(html).toMatch(/report-chart-current-label"[^>]*>12 kg</);
+  });
+
+  it("does not highlight a weekly point from another week", () => {
+    const chart = { ...weekly.chart, v: 2 as const, series: weekly.chart.series.map((s) => ({ ...s, points: [{ date: "2026-03-02", value: 10 }, { date: "2026-11-09", value: 12 }] })) };
+    const html = renderToStaticMarkup(<RangeChartsView title="Bench press" selected="9m" shown={{ range: "9m", granularity: "week", chart: chart as never }} status="idle" id="t" onSelect={() => {}} />);
     expect(html).not.toContain("report-chart-marker");
+  });
+
+  it("draws the line only (no per-point circles) above 20 points, keeping the diamond and the full table", () => {
+    const points = (n: number) => Array.from({ length: n }, (_, i) => ({ date: new Date(Date.UTC(2026, 6, 1) + i * 4 * 864e5).toISOString().slice(0, 10), value: 50 + i }));
+    const make = (n: number) => ({ ...v2, current_date: points(n).at(-1)!.date, series: [{ ...v2.series[1], points: points(n) }] });
+    const dense = renderToStaticMarkup(<ReportChart text={JSON.stringify(make(21))} />);
+    expect(dense).not.toContain("<circle");
+    expect(dense).toContain("report-chart-marker");
+    expect(dense.match(/class="report-chart-line"/g)).toHaveLength(20);
+    expect(dense.match(/<tr>/g)).toHaveLength(22);
+    const sparse = renderToStaticMarkup(<ReportChart text={JSON.stringify(make(20))} />);
+    expect(sparse.match(/<circle/g)).toHaveLength(19);
   });
 
   it("draws a single-point range without NaN", () => {
