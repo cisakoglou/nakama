@@ -405,10 +405,13 @@ button.bg-brand:enabled:hover { background: #f5b67c; transform: translateY(-1px)
 .report-chart-svg { grid-column: 2; display: block; overflow: visible; }
 .report-chart-xaxis { grid-column: 2; display: flex; justify-content: space-between; gap: 8px; margin-top: 4px; white-space: nowrap; }
 .report-chart-grid, .report-chart-leader { stroke: #49382e; stroke-width: 1; }
-.report-chart-line { stroke: #f0a35f; stroke-width: 2; stroke-linecap: round; }
-.report-chart-dot { fill: #18120f; stroke: #f0a35f; stroke-width: 1.5; }
+.report-chart-series { --series: #f0a35f; }
+/* Volume is blue (dataviz dark slot 1, 5.1:1 on canvas); max weight and reps stay brand orange (8.9:1). Labels always name the series. */
+.report-chart-volume { --series: #3987e5; }
+.report-chart-line { stroke: var(--series); stroke-width: 2; stroke-linecap: round; }
+.report-chart-dot { fill: #18120f; stroke: var(--series); stroke-width: 1.5; }
 .report-chart-halo { fill: #18120f; stroke: #f7f1e8; stroke-width: 1.5; }
-.report-chart-marker { fill: #f0a35f; }
+.report-chart-marker { fill: var(--series); }
 .report-chart-data { margin-top: 6px; font-size: 12px; color: #b9aa9c; }
 .report-chart-data > summary { text-decoration: underline dotted; text-underline-offset: 3px; width: fit-content; min-height: 32px; display: inline-flex; align-items: center; }
 .report-chart-data .table-scroll { margin: 6px 0 0; }
@@ -417,3 +420,22 @@ button.bg-brand:enabled:hover { background: #f5b67c; transform: translateY(-1px)
 .coaching-text .report-chart-data th, .coaching-text .report-chart-data td { padding: 6px 10px; }
 .report-chart-unavailable { color: #b9aa9c; font-size: 12px; font-style: italic; }
 @media (forced-colors: active) { .report-chart-line, .report-chart-dot { stroke: CanvasText; } .report-chart-marker { fill: CanvasText; } .report-chart-halo { stroke: CanvasText; } }
+/* Range toggle (v2 charts) */
+.report-chart-ranges { display: flex; gap: 4px; padding: 3px; border: 1px solid #49382e; border-radius: 12px; width: fit-content; max-width: 100%; }
+.report-chart-ranges > button { min-width: 52px; min-height: 44px; padding: 0 10px; border-radius: 9px; font-size: 13px; font-weight: 600; color: #b9aa9c; background: transparent; }
+.report-chart-ranges > button:hover { color: #f7f1e8; background: #2a201a; }
+.report-chart-ranges > button[aria-pressed="true"] { color: #3e2d20; background: #f0a35f; }
+.report-chart-status { display: flex; flex-wrap: wrap; justify-content: space-between; column-gap: 12px; min-height: 22px; margin: 6px 0 2px; font-size: 12px; color: #b9aa9c; }
+.report-chart-status [role="status"] { color: #f7f1e8; }
+.report-chart-retry { position: relative; margin-left: 8px; color: #f0a35f; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+/* 44px tap target without changing the line height. */
+.report-chart-retry::after { content: ""; position: absolute; inset: -12px -10px; }
+.report-chart-body { transition: opacity 160ms; }
+.report-chart-body.is-loading { opacity: .5; }
+@media (prefers-reduced-motion: reduce) { .report-chart-body { transition: none; } }
+/* "How to read this report" */
+.report-guide { margin: 20px 0 4px; padding-top: 12px; border-top: 1px solid #49382e; font-size: 13px; line-height: 1.6; color: #b9aa9c; white-space: normal; }
+.report-guide > summary { width: fit-content; min-height: 44px; display: inline-flex; align-items: center; color: #f7f1e8; font-weight: 600; }
+.report-guide dl { margin: 4px 0 0; }
+.report-guide dt { margin-top: 10px; color: #f7f1e8; font-weight: 600; }
+.report-guide dd { margin: 2px 0 0; }

@@ -2,11 +2,13 @@ import React from "react";
 import Markdown, { type ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ReportChart } from "@/components/report-chart";
+import { ReportGuide } from "@/components/report-guide";
 
 type Element = NonNullable<ExtraProps["node"]>;
 type ElementContent = Element["children"][number];
 
 const CHART_LANGUAGE = "language-nakama-chart";
+const CHART_FENCE = /^ {0,3}(`{3,}|~{3,})\s*nakama-chart\s*$/m;
 
 function textOf(nodes: ElementContent[]): string {
   return nodes.map((n) => n.type === "text" ? n.value : n.type === "element" ? textOf(n.children) : "").join("");
@@ -32,5 +34,5 @@ export function CoachingText({ text }: { text: string }) {
       const source = chartSource(node);
       return source === null ? <pre>{children}</pre> : <ReportChart text={source} />;
     },
-  }}>{text}</Markdown></div>;
+  }}>{text}</Markdown>{CHART_FENCE.test(text) && <ReportGuide />}</div>;
 }
