@@ -278,3 +278,28 @@ button.bg-brand:enabled:hover { background: #f5b67c; transform: translateY(-1px)
   .fx-limits { padding: 24px 20px; }
   .fx-final { padding: 40px 22px; }
 }
+/* Report charts (nakama-chart blocks). Colors = tailwind tokens: brand #f0a35f, ink #f7f1e8, ink-muted #b9aa9c,
+   line #49382e, canvas #18120f. Text is HTML at fixed sizes (never scaled below 12px). */
+.report-chart { max-width: 440px; margin: 12px 0 20px; white-space: normal; line-height: 1.4; }
+.coaching-text .report-chart-title { margin: 0 0 4px; color: #f7f1e8; font-weight: 600; font-size: 14px; overflow-wrap: anywhere; }
+.report-chart-series { margin: 10px 0 0; }
+.report-chart-label { color: #b9aa9c; font-size: 12px; }
+.report-chart-grid-layout { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 10px; padding-right: 8px; font-size: 12px; color: #b9aa9c; font-variant-numeric: tabular-nums; }
+.report-chart-current-label { grid-column: 2; min-height: 22px; text-align: right; color: #f7f1e8; font-weight: 600; font-size: 13px; white-space: nowrap; }
+/* Labels are 16px tall, so with the plot's 8px inset their centers sit exactly on the gridlines. */
+.report-chart-yaxis { grid-column: 1; display: flex; flex-direction: column; justify-content: space-between; text-align: right; white-space: nowrap; }
+.report-chart-yaxis > span { line-height: 16px; }
+.report-chart-yaxis > span:only-child { margin: auto 0; }
+.report-chart-svg { grid-column: 2; display: block; overflow: visible; }
+.report-chart-xaxis { grid-column: 2; display: flex; justify-content: space-between; gap: 8px; margin-top: 4px; white-space: nowrap; }
+.report-chart-grid, .report-chart-leader { stroke: #49382e; stroke-width: 1; }
+.report-chart-line { stroke: #f0a35f; stroke-width: 2; stroke-linecap: round; }
+.report-chart-dot { fill: #18120f; stroke: #f0a35f; stroke-width: 1.5; }
+.report-chart-current path { fill: #f0a35f; stroke: #18120f; stroke-width: 2; }
+.report-chart-data { margin-top: 6px; font-size: 12px; color: #b9aa9c; }
+.report-chart-data > summary { text-decoration: underline dotted; text-underline-offset: 3px; width: fit-content; min-height: 32px; display: inline-flex; align-items: center; }
+.report-chart-data .table-scroll { margin: 6px 0 0; }
+.coaching-text .report-chart-data table { font-size: 12px; }
+.coaching-text .report-chart-data th, .coaching-text .report-chart-data td { padding: 6px 10px; }
+.report-chart-unavailable { color: #b9aa9c; font-size: 12px; font-style: italic; }
+@media (forced-colors: active) { .report-chart-line, .report-chart-dot { stroke: CanvasText; } .report-chart-current path { fill: CanvasText; } }
