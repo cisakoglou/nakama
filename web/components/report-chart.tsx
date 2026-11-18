@@ -49,10 +49,14 @@ export function formatValue(value: number, unit: Series["unit"]): string {
 
 // Geometry. The SVG is never scaled: y is in CSS px (fixed height) and x is a percentage of the
 // plot width, so markers stay round and all text lives in HTML at a fixed >= 12px size.
-const PLOT_H = 96;
-const INSET = 8; // keeps the min/max markers inside the plot box
-const DIAMOND = 7; // half-diagonal of the current-session marker
+const PLOT_H = 104;
+const DIAMOND = 9; // half-diagonal of the current-session marker (~2x the hollow points)
+const RING = 13; // half-diagonal of its ink halo; the canvas-filled band between them is the gap
+const INSET = RING + 2; // keeps every marker, halo included, inside the plot box
 
+// "Total reps", not "Total reps (reps)".
+const seriesHeading = (s: Series) => s.unit === "reps" ? s.label : `${s.label} (${s.unit})`;
+const diamond = (r: number) => `M0,${-r}L${r},0L0,${r}L${-r},0Z`;
 const pct = (n: number) => `${Number(n.toFixed(3))}%`;
 
 function SeriesChart({ block, series, id }: { block: ChartBlock; series: Series; id: string }) {
@@ -75,13 +79,13 @@ function SeriesChart({ block, series, id }: { block: ChartBlock; series: Series;
 
   return (
     <figure className="report-chart-series">
-      <figcaption className="report-chart-label">{label} ({unit})</figcaption>
+      <figcaption className="report-chart-label">{seriesHeading(series)}</figcaption>
       <div className="report-chart-grid-layout">
         {/* Visual labels only; the svg's title/desc and the data table carry them for screen readers. */}
         <div className="report-chart-current-label" aria-hidden="true">
           {currentIndex >= 0 && formatValue(last.value, unit)}
         </div>
-        <div className="report-chart-yaxis" aria-hidden="true" style={{ height: PLOT_H }}>
+        <div className="report-chart-yaxis" aria-hidden="true" style={{ height: PLOT_H, padding: `${INSET - 8}px 0` }}>
           <span>{formatValue(max, unit)}</span>
           {!flat && <span>{formatValue(min, unit)}</span>}
         </div>
@@ -90,8 +94,8 @@ function SeriesChart({ block, series, id }: { block: ChartBlock; series: Series;
           <desc id={descId}>{desc}</desc>
           <line x1="0" x2="100%" y1={flat ? PLOT_H / 2 : INSET} y2={flat ? PLOT_H / 2 : INSET} className="report-chart-grid" />
           {!flat && <line x1="0" x2="100%" y1={PLOT_H - INSET} y2={PLOT_H - INSET} className="report-chart-grid" />}
-          {currentIndex >= 0 && cy - DIAMOND - 3 > 0 &&
-            <line x1="100%" x2="100%" y1={0} y2={cy - DIAMOND - 3} className="report-chart-leader" />}
+          {currentIndex >= 0 && cy - RING - 3 > 0 &&
+            <line x1="100%" x2="100%" y1={0} y2={cy - RING - 3} className="report-chart-leader" />}
           {points.slice(1).map((p, i) => <line key={i} x1={pct(x(i))} y1={y(points[i].value)} x2={pct(x(i + 1))} y2={y(p.value)}
             className="report-chart-line" />)}
           {points.map((p, i) => i === currentIndex ? null :
@@ -99,7 +103,8 @@ function SeriesChart({ block, series, id }: { block: ChartBlock; series: Series;
           {currentIndex >= 0 &&
             // Nested svg places the marker at a % x; the diamond is drawn around that origin in px.
             <svg x="100%" y={cy} overflow="visible" className="report-chart-current">
-              <path d={`M0,${-DIAMOND}L${DIAMOND},0L0,${DIAMOND}L${-DIAMOND},0Z`} />
+              <path d={diamond(RING)} className="report-chart-halo" />
+              <path d={diamond(DIAMOND)} className="report-chart-marker" />
             </svg>}
         </svg>
         <div className="report-chart-xaxis" aria-hidden="true">
@@ -117,8 +122,9 @@ function DataTable({ block }: { block: ChartBlock }) {
       <summary>Show data</summary>
       <div className="table-scroll">
         <table>
+          <caption className="report-chart-caption">{block.title}</caption>
           <thead><tr><th scope="col">#</th><th scope="col">Date</th>
-            {block.series.map((s) => <th key={s.key} scope="col">{`${s.label} (${s.unit})`}</th>)}</tr></thead>
+            {block.series.map((s) => <th key={s.key} scope="col">{seriesHeading(s)}</th>)}</tr></thead>
           <tbody>
             {Array.from({ length: Math.max(a.points.length, b?.points.length ?? 0) }, (_, i) => (
               <tr key={i}>
@@ -140,7 +146,6 @@ export function ReportChart({ text }: { text: string }) {
   if (!block) return <p className="report-chart-unavailable">Chart unavailable</p>;
   return (
     <section className="report-chart" aria-label={`${block.title} progress`}>
-      <p className="report-chart-title">{block.title}</p>
       {block.series.map((s, i) => <SeriesChart key={s.key} block={block} series={s} id={`rc${id}-${i}`} />)}
       <DataTable block={block} />
     </section>

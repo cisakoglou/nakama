@@ -44,17 +44,30 @@ describe("ReportChart", () => {
       // past sessions: small hollow circles; current session: one larger diamond path
       expect(chart.match(/<circle [^>]*class="report-chart-dot"/g)).toHaveLength(2);
       expect(chart).toMatch(/r="3.5"/);
-      const current = chart.match(/class="report-chart-current"><path d="([^"]+)"/);
-      expect(current?.[1]).toBe("M0,-7L7,0L0,7L-7,0Z");
+      // marker ~2x the hollow points (half-diagonal 9 vs r 3.5) with a separate ink halo around it
+      expect(chart).toContain('<path d="M0,-9L9,0L0,9L-9,0Z" class="report-chart-marker">');
+      expect(chart).toContain('<path d="M0,-13L13,0L0,13L-13,0Z" class="report-chart-halo">');
     }
     expect(html.match(/<circle/g)).toHaveLength(4);
   });
 
-  it("renders the exercise title as wrapping HTML, not svg text", () => {
+  it("keeps the exercise title out of the visible chart (the report heading shows it)", () => {
     const title = "Incline dumbbell bench press with a very long descriptive exercise name";
     const html = renderToStaticMarkup(<ReportChart text={JSON.stringify({ ...weighted, title })} />);
-    expect(html).toContain(`<p class="report-chart-title">${title}</p>`);
+    expect(html).not.toContain("report-chart-title");
+    expect(html).toContain(`<title id="rc`);
+    expect(html).toContain(`>${title}: Total volume</title>`);
+    expect(html).toContain(`<caption class="report-chart-caption">${title}</caption>`);
     expect(html).not.toContain("<text");
+  });
+
+  it("does not repeat the unit for reps", () => {
+    const block = { v: 1, title: "Pull up", current_date: "2026-11-18", series: [{ key: "total_reps", label: "Total reps", unit: "reps", points: [{ date: "2026-11-10", value: 24 }, { date: "2026-11-18", value: 30 }] }] };
+    const html = renderToStaticMarkup(<ReportChart text={JSON.stringify(block)} />);
+    expect(html).toContain('<figcaption class="report-chart-label">Total reps</figcaption>');
+    expect(html).not.toContain("(reps)");
+    const weightedHtml = renderToStaticMarkup(<ReportChart text={JSON.stringify(weighted)} />);
+    expect(weightedHtml).toContain('<figcaption class="report-chart-label">Total volume (kg)</figcaption>');
   });
 
   it("renders a single bodyweight series", () => {
