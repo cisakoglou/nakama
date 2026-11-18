@@ -280,19 +280,14 @@ describe("3-month average and best", () => {
     expect(three.achievements[0]).toContain("+20% vs your 3-month average (58.3 kg)");
   });
 
-  it("calls out a new 3-month best with the previous best and its date", () => {
-    const report = generateWorkoutReport(workout(10, [bench(60)]), [workout(9, [bench(50)]), workout(5, [bench(55)]), workout(2, [bench(40)])]);
-    expect(report.achievements[0]).toContain("**New 3-month best** (previous 64.2 kg, 5 Nov)");
+  it("never mentions a 3-month best", () => {
+    const rendered = renderWorkoutReport(generateWorkoutReport(workout(10, [bench(50)]), [workout(9, [bench(52)]), workout(5, [bench(60)])]));
+    expect(rendered).not.toMatch(/3-month best/i);
+    const slower = generateWorkoutReport(workout(10, [cardio(1700)]), [workout(9, [cardio(1550)])]);
+    expect(slower.patterns.join(" ")).not.toMatch(/3-month best/i);
   });
 
-  it("reports how far below the 3-month best, without calling it an achievement", () => {
-    const report = generateWorkoutReport(workout(10, [bench(50)]), [workout(9, [bench(52)]), workout(5, [bench(60)])]);
-    const text = [...report.achievements, ...report.patterns].join(" ");
-    expect(text).toContain("16.7% below your 3-month best (70 kg, 5 Nov)");
-    expect(report.achievements).toEqual([]);
-  });
-
-  it("treats a value within 2% of the best as about the same", () => {
+  it("treats a value within 2% of the previous session as about the same", () => {
     const report = generateWorkoutReport(workout(10, [bench(60)]), [workout(9, [bench(59.5)])]);
     expect(report.patterns[0]).toContain("No notable change");
     expect(report.achievements).toEqual([]);
@@ -301,15 +296,11 @@ describe("3-month average and best", () => {
   it("uses best-set reps for bodyweight exercises", () => {
     const report = generateWorkoutReport(workout(10, [strength([12], 0)]), [workout(9, [strength([10, 10], 0)]), workout(5, [strength([8], 0)]), workout(2, [strength([9], 0)])]);
     expect(report.achievements[0]).toContain("+33.3% vs your 3-month average (9 reps)");
-    expect(report.achievements[0]).toContain("**New 3-month best** (previous 10 reps, 9 Nov)");
   });
 
   it("uses recorded pace with faster being better", () => {
     const report = generateWorkoutReport(workout(10, [cardio(1500)]), [workout(9, [cardio(1550)]), workout(5, [cardio(1600)]), workout(2, [cardio(1650)])]);
     expect(report.achievements[0]).toContain("faster than your 3-month average (5:20 /km recorded pace)");
-    expect(report.achievements[0]).toContain("**New 3-month best** (previous 5:10 /km recorded pace, 9 Nov)");
-    const slower = generateWorkoutReport(workout(10, [cardio(1700)]), [workout(9, [cardio(1550)])]);
-    expect(slower.patterns.join(" ")).toContain("slower than your 3-month best (5:10 /km recorded pace, 9 Nov)");
   });
 
   it("makes no history claims for a first-time exercise", () => {
@@ -321,7 +312,6 @@ describe("3-month average and best", () => {
   it("displays averages and bests in lb", () => {
     const report = generateWorkoutReport(workout(10, [bench(60)]), [workout(9, [bench(50)]), workout(8, [bench(50)]), workout(7, [bench(50)])], "lb");
     expect(report.achievements[0]).toContain("vs your 3-month average (128.6 lb)");
-    expect(report.achievements[0]).toContain("previous 128.6 lb, 9 Nov");
   });
 
   it("stays within the render cap", () => {
@@ -344,7 +334,8 @@ describe("3-month average and best", () => {
 });
 
 const chartSchema = z.object({
-  v: z.literal(1),
+  v: z.literal(2),
+  exercise_template_id: z.string().min(1).max(64).regex(/^[A-Za-z0-9_-]+$/),
   title: z.string().min(1).max(80),
   current_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   series: z.array(z.object({
@@ -369,6 +360,7 @@ describe("chart blocks", () => {
     const rendered = renderWorkoutReport(report);
     const [chart] = chartsIn(rendered);
     expect(chart.title).toBe("Bench press");
+    expect(chart.exercise_template_id).toBe("bench");
     expect(chart.current_date).toBe("2026-11-10");
     expect(chart.series.map((s) => s.key)).toEqual(["volume", "max_weight"]);
     expect(chart.series[0].points).toEqual([
@@ -377,7 +369,7 @@ describe("chart blocks", () => {
     expect(chart.series[1].points.map((p) => p.value)).toEqual([55, 60, 62.5]);
     expect(chart.series.every((s) => s.unit === "kg")).toBe(true);
     // Block sits directly under its exercise's bullets.
-    expect(rendered).toMatch(/### Bench press\n\n- [^\n]*\n\n```nakama-chart\n/);
+    expect(rendered).toMatch(/### Bench press\n\n(- [^\n]*\n)+\n```nakama-chart\n/);
   });
 
   it("uses lb values rounded to one decimal", () => {
@@ -438,5 +430,83 @@ describe("chart blocks", () => {
     expect(chartsIn(trimmed).length).toBeLessThan(2);
     expect((trimmed.match(/```/g) ?? []).length % 2).toBe(0);
     expect(firstChart.title).toBe("Bench press");
+  });
+});
+
+const plain = (line: string) => line.replace(/^[^:]+: /, "");
+
+describe("all-time PRs", () => {
+  const sets = (pairs: [number, number][]): Exercise => ({
+    title: "Bench press", exercise_template_id: "bench",
+    sets: pairs.map(([weight_kg, reps], index) => ({ index, type: "normal", weight_kg, reps })),
+  });
+  const old = (id: string, date: string, exercise: Exercise): HevyWorkout => ({
+    ...workout(1, [exercise], id), start_time: `${date}T10:00:00Z`, end_time: `${date}T11:00:00Z`,
+  });
+  const prs = (current: Exercise, past: HevyWorkout[], units: "kg" | "lb" = "kg") =>
+    generateWorkoutReport(workout(10, [current]), past, units).prs.map(plain);
+
+  it("flags both a heaviest-weight and an estimated 1RM PR, e1RM first, with previous best and date", () => {
+    const lines = prs(sets([[70, 3]]), [old("a", "2026-03-14", sets([[60, 8]])), old("b", "2026-04-02", sets([[65, 5]]))]);
+    expect(lines).toEqual([
+      "🏆 New PR: estimated 1RM 77 kg (previous best 76 kg, 14 Mar)",
+      "🏆 New PR: heaviest weight 70 kg (previous best 65 kg, 2 Apr)",
+    ]);
+  });
+
+  it("flags only the e1RM when the heaviest weight is not beaten", () => {
+    const lines = prs(sets([[60, 12]]), [old("a", "2026-04-02", sets([[65, 3]]))]);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toBe("🏆 New PR: estimated 1RM 84 kg (previous best 71.5 kg, 2 Apr)");
+    expect(lines[0]).not.toContain("heaviest");
+  });
+
+  it("flags only heaviest weight when the e1RM is not beaten", () => {
+    const lines = prs(sets([[70, 1]]), [old("a", "2026-04-02", sets([[60, 12]]))]);
+    expect(lines).toEqual(["🏆 New PR: heaviest weight 70 kg (previous best 60 kg, 2 Apr)"]);
+  });
+
+  it("shows no PR when neither is beaten, and a tie is not a PR", () => {
+    expect(prs(sets([[60, 5]]), [old("a", "2026-04-02", sets([[70, 5]]))])).toEqual([]);
+    expect(prs(sets([[70, 5]]), [old("a", "2026-04-02", sets([[70, 5]]))])).toEqual([]);
+    const rendered = renderWorkoutReport(generateWorkoutReport(workout(10, [sets([[70, 5]])]), [old("a", "2026-04-02", sets([[70, 5]]))]));
+    expect(rendered).not.toContain("🏆");
+  });
+
+  it("never flags a PR on the first-ever session of an exercise", () => {
+    expect(prs(sets([[100, 5]]), [])).toEqual([]);
+    expect(prs(sets([[100, 5]]), [old("a", "2026-04-02", { ...sets([[50, 5]]), exercise_template_id: "other" })])).toEqual([]);
+  });
+
+  it("needs to beat every earlier session, including ones older than 90 days", () => {
+    const past = [old("ancient", "2025-01-05", sets([[90, 5]])), workout(9, [sets([[60, 5]])])];
+    expect(prs(sets([[80, 5]]), past)).toEqual([]);
+    const lines = prs(sets([[95, 5]]), past);
+    expect(lines[1]).toBe("🏆 New PR: heaviest weight 95 kg (previous best 90 kg, 5 Jan 2025)");
+  });
+
+  it("only uses old history for PRs, not for comparisons or charts", () => {
+    const past = [old("ancient", "2025-01-05", sets([[60, 5]]))];
+    const rendered = renderWorkoutReport(generateWorkoutReport(workout(10, [sets([[95, 5]])]), past));
+    expect(rendered).toContain("🏆 New PR");
+    expect(rendered).toContain("First time logging this exercise in the last 90 days.");
+    expect(rendered).not.toContain("nakama-chart");
+  });
+
+  it("flags a bodyweight most-reps-in-a-set PR", () => {
+    const body = (reps: number[]): Exercise => ({
+      title: "Pull-up", exercise_template_id: "pull",
+      sets: reps.map((count, index) => ({ index, type: "normal", weight_kg: 0, reps: count })),
+    });
+    const pastSession = old("a", "2026-10-21", body([8, 6]));
+    const report = generateWorkoutReport(workout(10, [body([9, 5])]), [pastSession]);
+    expect(report.prs.map(plain)).toEqual(["🏆 New PR: 9 reps in a set (previous best 8, 21 Oct)"]);
+    expect(generateWorkoutReport(workout(10, [body([8])]), [pastSession]).prs).toEqual([]);
+  });
+
+  it("converts PR values to lb and puts the PR lines first under the exercise heading", () => {
+    const report = generateWorkoutReport(workout(10, [sets([[70, 5]])]), [old("a", "2026-04-02", sets([[60, 5]]))], "lb");
+    expect(plain(report.prs[1])).toBe("🏆 New PR: heaviest weight 154.3 lb (previous best 132.3 lb, 2 Apr)");
+    expect(renderWorkoutReport(report)).toMatch(/### Bench press\n\n- 🏆 New PR: estimated 1RM/);
   });
 });

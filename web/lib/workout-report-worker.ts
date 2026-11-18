@@ -18,7 +18,6 @@ const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 30 * 60_000, 2 * 60 * 60_000];
 export const WORKOUT_NOT_FOUND_MAX_ATTEMPTS = 3;
 // Wake drains run just after a new job becomes due, with slack for app/database clock skew.
 const WAKE_DELAY_MS = WORKOUT_REPORT_FIRST_ATTEMPT_DELAY_MS + 1_000;
-const HISTORY_DAYS = 90;
 const HISTORY_MAX_EXERCISES = 20;
 const HISTORY_CONCURRENCY = 3;
 const MAX_JOBS_PER_DRAIN = 50;
@@ -64,13 +63,12 @@ async function hevyGet(apiKey: string, path: string, params: Record<string, stri
   return response.json() as Promise<unknown>;
 }
 
-/** True 90-day history per distinct exercise in the workout, grouped into per-workout sessions. */
+/**
+ * Full (all-time) history per distinct exercise in the workout, grouped into per-workout sessions.
+ * No date range is sent: the report itself narrows to 90 days for comparisons and charts, and uses
+ * everything only for all-time PRs.
+ */
 async function exerciseHistory(apiKey: string, workout: HevyWorkout) {
-  const start = Date.parse(workout.start_time);
-  const params = {
-    start_date: new Date(start - HISTORY_DAYS * 24 * 60 * 60 * 1000).toISOString(),
-    end_date: new Date(start).toISOString(),
-  };
   const titles = new Map<string, string>();
   for (const exercise of workout.exercises) {
     if (!titles.has(exercise.exercise_template_id)) titles.set(exercise.exercise_template_id, exercise.title);
@@ -84,7 +82,7 @@ async function exerciseHistory(apiKey: string, workout: HevyWorkout) {
       const [templateId, title] = targets[index];
       let body: unknown;
       try {
-        body = await hevyGet(apiKey, `/exercise_history/${encodeURIComponent(templateId)}`, params);
+        body = await hevyGet(apiKey, `/exercise_history/${encodeURIComponent(templateId)}`);
       } catch (error) {
         // No history, or a deleted/custom template: this exercise just has nothing to compare.
         if (error instanceof HevyRequestError && error.status === 404) {
@@ -99,7 +97,8 @@ async function exerciseHistory(apiKey: string, workout: HevyWorkout) {
     }
   };
   await Promise.all(Array.from({ length: Math.min(HISTORY_CONCURRENCY, targets.length) }, run));
-  return historyFromExerciseHistory(responses, workout.id);
+  const start = Date.parse(workout.start_time);
+  return historyFromExerciseHistory(responses, workout.id).filter((past) => Date.parse(past.end_time) < start);
 }
 
 function parseWorkout(value: unknown): HevyWorkout | null {
