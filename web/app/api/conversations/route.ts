@@ -9,8 +9,10 @@ export async function GET(request: NextRequest) {
   if (!access.ok) return access.response;
   const page = z.coerce.number().int().min(0).max(10000).safeParse(request.nextUrl.searchParams.get("page") ?? 0);
   if (!page.success) return access.session.json({ error: "Choose a valid chat history page." }, 400);
+  const query = z.string().trim().max(80).safeParse(request.nextUrl.searchParams.get("q") ?? "");
+  if (!query.success) return access.session.json({ error: "Search chat names with 80 characters or fewer." }, 400);
   try {
-    return access.session.json(await conversationStore(access.session.client, access.user.id).list(page.data));
+    return access.session.json(await conversationStore(access.session.client, access.user.id).list(page.data, query.data));
   } catch (error) {
     if (!(error instanceof ConversationError)) throw error;
     return access.session.json({ error: error.message }, error.status);

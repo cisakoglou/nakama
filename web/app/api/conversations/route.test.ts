@@ -35,10 +35,24 @@ beforeEach(() => {
 
 it("lists and creates only for the server-verified account", async () => {
   expect((await GET(request())).status).toBe(200);
-  expect(mocks.list).toHaveBeenCalledWith(0);
+  expect(mocks.list).toHaveBeenCalledWith(0, "");
   expect((await POST(request("POST", { user_id: "forged" }))).status).toBe(201);
   expect(mocks.store.mock.calls.every((call) => call[1] === id)).toBe(true);
   expect(mocks.create).toHaveBeenCalledWith();
+});
+
+it("searches all saved titles on the requested page for the verified account", async () => {
+  const response = await GET(new NextRequest("https://nakama.test/api/conversations?page=2&q=%20Squat%20"));
+  expect(response.status).toBe(200);
+  expect(mocks.store).toHaveBeenCalledWith("verified-client", id);
+  expect(mocks.list).toHaveBeenCalledWith(2, "Squat");
+});
+
+it("rejects oversized searches and invalid pages before querying storage", async () => {
+  for (const suffix of [`q=${"a".repeat(81)}`, "page=-1", "page=1.5"]) {
+    expect((await GET(new NextRequest(`https://nakama.test/api/conversations?${suffix}`))).status).toBe(400);
+  }
+  expect(mocks.store).not.toHaveBeenCalled();
 });
 
 it.each(["POST", "PATCH", "DELETE"])("rejects foreign origins before authentication (%s)", async (method) => {

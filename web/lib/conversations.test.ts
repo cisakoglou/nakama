@@ -1,5 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { createClient } from "@supabase/supabase-js";
+import { PGlite } from "@electric-sql/pglite";
 import { conversationStore } from "./conversations";
 import type { Database } from "./supabase/database";
 import type { Conversation } from "./conversation-types";
@@ -7,6 +8,7 @@ import type { Conversation } from "./conversation-types";
 vi.mock("server-only", () => ({}));
 const query = {
   select: vi.fn(), eq: vi.fn(), or: vi.fn(), update: vi.fn(), delete: vi.fn(), maybeSingle: vi.fn(),
+  filter: vi.fn(), order: vi.fn(), range: vi.fn(),
 };
 const client = createClient<Database>("https://supabase.example.test", "sb_publishable_test", {
   auth: { persistSession: false, autoRefreshToken: false },
@@ -22,8 +24,68 @@ const store = conversationStore(client, id);
 beforeEach(() => {
   vi.resetAllMocks();
   vi.spyOn(client, "from").mockReturnValue(query as ReturnType<typeof client.from>);
-  for (const method of [query.select, query.eq, query.or, query.update, query.delete]) method.mockReturnValue(query);
+  for (const method of [query.select, query.eq, query.or, query.update, query.delete, query.filter, query.order]) method.mockReturnValue(query);
   query.maybeSingle.mockResolvedValue({ data: chat, error: null });
+});
+
+it("filters literal title matches before account-scoped pagination", async () => {
+  query.range.mockResolvedValue({ data: Array.from({ length: 21 }, () => chat), error: null });
+  const page = await store.list(2, "Squat.* (50%_)+[a]?\\");
+  expect(query.eq).toHaveBeenCalledWith("user_id", id);
+  expect(query.filter).toHaveBeenCalledWith("title", "imatch", "Squat\\.\\* \\(50%_\\)\\+\\[a\\]\\?\\\\");
+  expect(query.filter.mock.invocationCallOrder[0]).toBeLessThan(query.range.mock.invocationCallOrder[0]);
+  expect(query.range).toHaveBeenCalledWith(40, 60);
+  expect(page.conversations).toHaveLength(20);
+  expect(page.hasMore).toBe(true);
+});
+
+it("preserves unfiltered history and surfaces search storage failures", async () => {
+  query.range.mockResolvedValue({ data: [chat], error: null });
+  expect(await store.list(0)).toMatchObject({ hasMore: false });
+  expect(query.filter).not.toHaveBeenCalled();
+  query.range.mockResolvedValue({ data: null, error: { code: "unavailable" } });
+  await expect(store.list(0, "Squat")).rejects.toMatchObject({ status: 503 });
+});
+
+it("executes literal case-insensitive searches and pagination against PostgreSQL", async () => {
+  const db = new PGlite();
+  try {
+    await db.exec(`create table chat_conversations (
+      id uuid, user_id uuid, title text, status text, created_at timestamptz, updated_at timestamptz
+    )`);
+    const literal = "Squat.* (50%_)+[a]?\\";
+    await db.query(`insert into chat_conversations
+      select md5(i::text)::uuid, $1::uuid, $2::text, 'ready', now(), now()
+      from generate_series(1, 45) i`, [id, literal]);
+    await db.query(`insert into chat_conversations values
+      (gen_random_uuid(), gen_random_uuid(), $1, 'ready', now(), now()),
+      (gen_random_uuid(), $2, 'Squat ordinary chat', 'ready', now(), now())`, [literal, id]);
+    const databaseClient = createClient<Database>("https://supabase.example.test", "sb_publishable_test", {
+      auth: { persistSession: false, autoRefreshToken: false },
+      global: { fetch: async (input) => {
+        const url = new URL(input instanceof Request ? input.url : String(input));
+        expect(url.searchParams.get("user_id")).toBe(`eq.${id}`);
+        const filter = url.searchParams.get("title");
+        if (!filter) throw new Error("Missing title filter.");
+        expect(filter).toMatch(/^imatch\./);
+        const data = await db.query(`select * from chat_conversations
+          where user_id = $1 and title ~* $2 order by updated_at desc, id desc limit $3 offset $4`,
+        [id, filter.slice(7), Number(url.searchParams.get("limit")), Number(url.searchParams.get("offset"))]);
+        return Response.json(data.rows);
+      } },
+    });
+    const searched = conversationStore(databaseClient, id);
+    for (const term of ["sQUAT.*", "(50%_)", "+[a]?\\"]) {
+      const firstPage = await searched.list(0, term);
+      const lastPage = await searched.list(2, term);
+      expect(firstPage.conversations).toHaveLength(20);
+      expect(firstPage.hasMore).toBe(true);
+      expect(lastPage.conversations).toHaveLength(5);
+      expect(lastPage.hasMore).toBe(false);
+      expect([...firstPage.conversations, ...lastPage.conversations].every((chat) => chat.title === literal)).toBe(true);
+    }
+    expect(await searched.list(0, "missing")).toEqual({ conversations: [], hasMore: false });
+  } finally { await db.close(); }
 });
 
 it("always scopes database access to the verified owner", async () => {

@@ -41,9 +41,13 @@ export function conversationStore(client: SupabaseClient<Database>, userId: stri
     return result.data;
   }
   return {
-    async list(page: number) {
-      const { data, error } = await table()
-        .select("id, title, status, created_at, updated_at").eq("user_id", userId)
+    async list(page: number, search = "") {
+      let query = table().select("id, title, status, created_at, updated_at").eq("user_id", userId);
+      if (search) {
+        // A literal regex avoids PostgREST's LIKE wildcard aliases, including "*".
+        query = query.filter("title", "imatch", search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+      }
+      const { data, error } = await query
         .order("updated_at", { ascending: false }).order("id", { ascending: false })
         .range(page * 20, page * 20 + 20);
       if (error) throw failure(error.code);
