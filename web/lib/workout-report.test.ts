@@ -75,7 +75,7 @@ describe("workout report comparisons", () => {
     expect(report.achievements[0]).toContain("top set 62.5 kg x 8 vs 60 kg x 8");
     expect(report.achievements[0]).toContain("total volume 1312.5 kg vs 1380 kg");
     expect(report.limitations).toEqual([]);
-    expect(renderWorkoutReport(report)).toContain("estimated 1RM");
+    expect(renderWorkoutReport(report)).toContain("Estimated 1RM");
   });
 
   it("finds gains while excluding warmup and non-normal sets", () => {

@@ -447,6 +447,10 @@ function markdownText(value: string) {
   return value.replace(/[\\`*_{}[\]<>#!|]/g, "\\$&");
 }
 
+function capitalize(text: string) {
+  return text.replace(/^[a-z]/, (letter) => letter.toUpperCase());
+}
+
 function chartBlock(chart: ChartData) {
   return `\`\`\`nakama-chart\n${JSON.stringify(chart)}\n\`\`\``;
 }
@@ -464,7 +468,7 @@ export function renderWorkoutReport(report: WorkoutReport): string {
       if (!exercise.lines.length && !chart) return [];
       return [[
         `### ${markdownText(label(exercise.name))}`,
-        ...(exercise.lines.length ? [exercise.lines.map((line) => `- ${markdownText(line).replace("\\*\\*New 3-month best\\*\\*", "**New 3-month best**")}`).join("\n")] : []),
+        ...(exercise.lines.length ? [exercise.lines.map((line) => `- ${capitalize(markdownText(line).replace("\\*\\*New 3-month best\\*\\*", "**New 3-month best**"))}`).join("\n")] : []),
         ...(chart ? [chartBlock(chart)] : []),
       ].join("\n\n")];
     });
