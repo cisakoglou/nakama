@@ -2,12 +2,13 @@ import { describe, expect, it } from "vitest";
 import type { ConversationSummary } from "@/lib/conversation-types";
 import { base64UrlToBytes, pushSupport, sameServerKey, type PushEnvironment } from "./push-client";
 import {
-  chatDeepLink, latestCreatedAt, mergeLatest, newReportIds, reportsSeenStore, withoutChatParam,
+  chatDeepLink, isWorkoutReport, latestCreatedAt, mergeLatest, newReportIds, reportsSeenStore, withoutChatParam,
 } from "./report-notices";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const chat = (n: number, title: string, created: string, updated = created): ConversationSummary => ({
   id: id(n), title, status: "ready", created_at: created, updated_at: updated,
+  first_message_id: title.startsWith("Workout report") ? `workout-report-${n}` : null,
 });
 
 describe("chat deep links", () => {
@@ -24,6 +25,14 @@ describe("chat deep links", () => {
 });
 
 describe("new workout reports", () => {
+  it("recognizes reports after renaming without classifying ordinary chats by their title", () => {
+    const report = chat(1, "Workout report: Legs", "2026-11-15T10:00:00Z");
+    const renamed = { ...report, title: "My leg progress" };
+    const ordinary = { ...chat(2, "Ordinary chat", report.created_at), title: "Workout report: My plan" };
+    expect(isWorkoutReport(renamed)).toBe(true);
+    expect(isWorkoutReport(ordinary)).toBe(false);
+    expect(isWorkoutReport({ messages: [{ id: "workout-report-1", role: "assistant", content: "Report" }] })).toBe(true);
+  });
   const chats = [
     chat(1, "Workout report: Legs", "2026-11-15T10:00:00Z"),
     chat(2, "Workout report: Push", "2026-11-14T10:00:00Z", "2026-11-15T11:00:00Z"),

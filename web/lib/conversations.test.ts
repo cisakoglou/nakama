@@ -20,6 +20,7 @@ const chat: Conversation = {
   created_at: "2026-11-04T00:00:00Z", updated_at: "2026-11-04T00:00:00Z",
 };
 const store = conversationStore(client, id);
+const summary = { ...chat, first_message_id: null };
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -29,7 +30,7 @@ beforeEach(() => {
 });
 
 it("filters literal title matches before account-scoped pagination", async () => {
-  query.range.mockResolvedValue({ data: Array.from({ length: 21 }, () => chat), error: null });
+  query.range.mockResolvedValue({ data: Array.from({ length: 21 }, () => summary), error: null });
   const page = await store.list(2, "Squat.* (50%_)+[a]?\\");
   expect(query.eq).toHaveBeenCalledWith("user_id", id);
   expect(query.filter).toHaveBeenCalledWith("title", "imatch", "Squat\\.\\* \\(50%_\\)\\+\\[a\\]\\?\\\\");
@@ -40,7 +41,7 @@ it("filters literal title matches before account-scoped pagination", async () =>
 });
 
 it("preserves unfiltered history and surfaces search storage failures", async () => {
-  query.range.mockResolvedValue({ data: [chat], error: null });
+  query.range.mockResolvedValue({ data: [summary], error: null });
   expect(await store.list(0)).toMatchObject({ hasMore: false });
   expect(query.filter).not.toHaveBeenCalled();
   query.range.mockResolvedValue({ data: null, error: { code: "unavailable" } });
@@ -51,24 +52,28 @@ it("executes literal case-insensitive searches and pagination against PostgreSQL
   const db = new PGlite();
   try {
     await db.exec(`create table chat_conversations (
-      id uuid, user_id uuid, title text, status text, created_at timestamptz, updated_at timestamptz
+      id uuid, user_id uuid, title text, status text, created_at timestamptz, updated_at timestamptz,
+      messages jsonb default '[]'
     )`);
     const literal = "Squat.* (50%_)+[a]?\\";
-    await db.query(`insert into chat_conversations
+    await db.query(`insert into chat_conversations (id, user_id, title, status, created_at, updated_at)
       select md5(i::text)::uuid, $1::uuid, $2::text, 'ready', now(), now()
       from generate_series(1, 45) i`, [id, literal]);
-    await db.query(`insert into chat_conversations values
+    await db.query(`insert into chat_conversations (id, user_id, title, status, created_at, updated_at) values
       (gen_random_uuid(), gen_random_uuid(), $1, 'ready', now(), now()),
       (gen_random_uuid(), $2, 'Squat ordinary chat', 'ready', now(), now())`, [literal, id]);
+    await db.query("update chat_conversations set messages = $1::jsonb where title = $2",
+      [JSON.stringify([{ id: "workout-report-example", role: "assistant", content: "Report" }]), literal]);
     const databaseClient = createClient<Database>("https://supabase.example.test", "sb_publishable_test", {
       auth: { persistSession: false, autoRefreshToken: false },
       global: { fetch: async (input) => {
         const url = new URL(input instanceof Request ? input.url : String(input));
         expect(url.searchParams.get("user_id")).toBe(`eq.${id}`);
+        expect(url.searchParams.get("select")).toContain("first_message_id:messages->0->>id");
         const filter = url.searchParams.get("title");
         if (!filter) throw new Error("Missing title filter.");
         expect(filter).toMatch(/^imatch\./);
-        const data = await db.query(`select * from chat_conversations
+        const data = await db.query(`select *, messages->0->>'id' as first_message_id from chat_conversations
           where user_id = $1 and title ~* $2 order by updated_at desc, id desc limit $3 offset $4`,
         [id, filter.slice(7), Number(url.searchParams.get("limit")), Number(url.searchParams.get("offset"))]);
         return Response.json(data.rows);
@@ -79,6 +84,7 @@ it("executes literal case-insensitive searches and pagination against PostgreSQL
       const firstPage = await searched.list(0, term);
       const lastPage = await searched.list(2, term);
       expect(firstPage.conversations).toHaveLength(20);
+      expect(firstPage.conversations.every((chat) => chat.first_message_id === "workout-report-example")).toBe(true);
       expect(firstPage.hasMore).toBe(true);
       expect(lastPage.conversations).toHaveLength(5);
       expect(lastPage.hasMore).toBe(false);

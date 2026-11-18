@@ -22,7 +22,7 @@ export const conversationSchema = z.object({
 });
 export const conversationSummarySchema = conversationSchema.pick({
   id: true, title: true, status: true, created_at: true, updated_at: true,
-});
+}).extend({ first_message_id: z.string().nullable() });
 export const conversationResponseSchema = z.object({ conversation: conversationSchema });
 export const conversationListSchema = z.object({
   conversations: z.array(conversationSummarySchema), hasMore: z.boolean(),

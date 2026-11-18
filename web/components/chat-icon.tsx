@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
 
 const paths = {
-  chat: <path d="M21 11.5a8.5 8.5 0 0 1-12.3 7.6L3 21l1.9-5.7A8.5 8.5 0 1 1 21 11.5Z" />,
+  chat: <><path d="M18 10V4H3v12l4-3h4" /><path d="M10 10h11v11l-4-3h-7Z" /></>,
+  report: <><path d="M14 3H5v18h14V8ZM14 3v5h5M8 17v-3M12 17v-6M16 17v-4" /></>,
   pencil: <path d="m16 3 5 5M4 20l5-1L21 7a2.1 2.1 0 0 0-5-3L4 16l-1 5Z" />,
   trash: <path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v6M14 10v6" />,
   close: <path d="m6 6 12 12M18 6 6 18" />,

@@ -1,7 +1,6 @@
-import type { ConversationSummary } from "@/lib/conversation-types";
+import type { Conversation, ConversationSummary } from "@/lib/conversation-types";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const REPORT_PREFIX = "Workout report";
 export const LIST_REFRESH_INTERVAL_MS = 15_000;
 
 // `?chat=<uuid>` from a notification; anything else is ignored.
@@ -17,8 +16,9 @@ export function withoutChatParam(href: string) {
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
-export function isWorkoutReport(chat: Pick<ConversationSummary, "title">) {
-  return chat.title.startsWith(REPORT_PREFIX);
+export function isWorkoutReport(chat: Pick<ConversationSummary, "first_message_id"> | Pick<Conversation, "messages">) {
+  const firstMessageId = "first_message_id" in chat ? chat.first_message_id : chat.messages[0]?.id;
+  return firstMessageId?.startsWith("workout-report-") ?? false;
 }
 
 // Report chats created after the user last looked at the list. created_at (not updated_at) so that

@@ -5,7 +5,7 @@ import { z } from "zod";
 import { BrandMark } from "@/components/brand-lockup";
 import { ChatActionDialog } from "@/components/chat-action-dialog";
 import { ChatIcon } from "@/components/chat-icon";
-import { ChatSearchTitle } from "@/components/chat-search-title";
+import { ChatHistoryRow } from "@/components/chat-history-row";
 import { useChatSearch } from "@/components/use-chat-search";
 import { TrainingLoader } from "@/components/training-loader";
 import { ConversationChat } from "@/components/conversation-chat";
@@ -29,6 +29,8 @@ export function ChatPanel({ onSettings, onSignOut, signingOut, accountError, use
   const [acting, setActing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [rowMenu, setRowMenu] = useState<string | null>(null);
+  const dismissRowMenu = useCallback(() => setRowMenu(null), []);
   const [chatAction, setChatAction] = useState<{ kind: "rename" | "delete"; chat: Pick<Conversation, "id" | "title"> } | null>(null);
   const search = useChatSearch();
   const searchInput = useRef<HTMLInputElement>(null);
@@ -64,7 +66,10 @@ export function ChatPanel({ onSettings, onSignOut, signingOut, accountError, use
   useEffect(() => {
     const outside = (event: PointerEvent) => {
       if (!(event.target instanceof Node)) return;
-      if (!historyPanel.current?.contains(event.target) && !historyToggle.current?.contains(event.target)) setShowHistory(false);
+      if (!historyPanel.current?.contains(event.target) && !historyToggle.current?.contains(event.target)) {
+        setShowHistory(false);
+        dismissRowMenu();
+      }
       if (accountMenu.current && !accountMenu.current.contains(event.target)) accountMenu.current.open = false;
     };
     const escape = (event: KeyboardEvent) => {
@@ -72,6 +77,9 @@ export function ChatPanel({ onSettings, onSignOut, signingOut, accountError, use
       if (accountMenu.current?.open) {
         accountMenu.current.open = false;
         accountMenu.current.querySelector("summary")?.focus();
+      } else if (rowMenu) {
+        dismissRowMenu();
+        historyPanel.current?.querySelector<HTMLButtonElement>(`[aria-controls="chat-actions-${rowMenu}"]`)?.focus();
       } else if (showHistory) {
         setShowHistory(false);
         historyToggle.current?.focus();
@@ -83,17 +91,17 @@ export function ChatPanel({ onSettings, onSignOut, signingOut, accountError, use
       document.removeEventListener("pointerdown", outside);
       document.removeEventListener("keydown", escape);
     };
-  }, [showHistory]);
+  }, [showHistory, rowMenu, dismissRowMenu]);
 
   function closeMenus() {
     setShowHistory(false);
+    dismissRowMenu();
     if (accountMenu.current) accountMenu.current.open = false;
   }
 
-  function editChat(kind: "rename" | "delete") {
-    if (!active) return;
+  function editChat(kind: "rename" | "delete", chat: Pick<ConversationSummary, "id" | "title">) {
     setError(null);
-    setChatAction({ kind, chat: { id: active.id, title: active.title } });
+    setChatAction({ kind, chat: { id: chat.id, title: chat.title } });
     closeMenus();
   }
 
@@ -294,6 +302,7 @@ export function ChatPanel({ onSettings, onSignOut, signingOut, accountError, use
         <div className="mr-auto min-w-0"><h1 className="text-xl font-black tracking-tight">Nakama</h1><p className="max-w-56 truncate text-xs text-ink-muted">{active?.title ?? "Your training companion"}</p></div>
         <button ref={historyToggle} onClick={() => {
           if (accountMenu.current) accountMenu.current.open = false;
+          dismissRowMenu();
           setShowHistory((value) => !value);
         }} aria-expanded={showHistory} aria-controls="chat-history" className="chat-history-toggle min-h-11">
           Chats{newReports.size > 0 && <span className="ml-1 rounded-full bg-brand px-1.5 py-0.5 text-xs font-semibold text-canvas no-underline">
@@ -302,7 +311,7 @@ export function ChatPanel({ onSettings, onSignOut, signingOut, accountError, use
         </button>
         <button onClick={() => { closeMenus(); void run(create); }} disabled={disabled} className="chat-new-button min-h-11 disabled:opacity-50"><ChatIcon name="plus" />New chat</button>
         <details ref={accountMenu} className="account-menu" onToggle={(event) => {
-          if (event.currentTarget.open) setShowHistory(false);
+          if (event.currentTarget.open) { setShowHistory(false); dismissRowMenu(); }
         }}><summary aria-label="Account menu"><ChatIcon name="dots" /></summary><div>
           <button onClick={() => { closeMenus(); void run(async () => onSettings()); }} disabled={disabled} className="disabled:opacity-50"><ChatIcon name="settings" />Settings</button>
           <a href="/features" target="_blank" rel="noopener noreferrer" onClick={closeMenus}>
@@ -317,7 +326,7 @@ export function ChatPanel({ onSettings, onSignOut, signingOut, accountError, use
           <div className="chat-history-search">
             <ChatIcon name="search" />
             <input ref={searchInput} type="search" aria-label="Search chat names" placeholder="Search chat names"
-              maxLength={80} value={search.query} onChange={(event) => search.setQuery(event.target.value)} />
+              maxLength={80} value={search.query} onChange={(event) => { dismissRowMenu(); search.setQuery(event.target.value); }} />
             {search.query && <button aria-label="Clear search" onClick={() => { search.setQuery(""); searchInput.current?.focus(); }}><ChatIcon name="close" /></button>}
           </div>
           {search.term && <p className="chat-search-status" role="status">{search.loading ? "Searching..." : search.error
@@ -329,27 +338,15 @@ export function ChatPanel({ onSettings, onSignOut, signingOut, accountError, use
               <ChatIcon name="search" /><h3>No chats found.</h3><p>Try a different chat name, or clear your search to see them all.</p>
               <button onClick={() => { search.setQuery(""); searchInput.current?.focus(); }}>Clear search</button>
             </div>}
-            {history.map((chat) => <button key={chat.id} disabled={disabled || (Boolean(search.term) && search.loading)} aria-current={active?.id === chat.id ? "page" : undefined}
-              onClick={() => { void run(() => open(chat.id)); }} className="chat-history-row">
-              <span className="chat-history-icon"><ChatIcon name="chat" /></span>
-              <span className="chat-history-copy">
-                <span className="chat-history-title"><ChatSearchTitle title={chat.title} query={search.term} />{newReports.has(chat.id) && <span className="chat-history-new">New</span>}</span>
-                <time dateTime={chat.updated_at}>{new Date(chat.updated_at).toLocaleString()}</time>
-              </span>
-              {active?.id === chat.id && <ChatIcon name="check" />}
-            </button>)}
+            {history.map((chat) => <ChatHistoryRow key={chat.id} chat={chat} active={active?.id === chat.id}
+              unread={newReports.has(chat.id)} disabled={disabled || (Boolean(search.term) && search.loading)} query={search.term}
+              expanded={rowMenu === chat.id} onToggle={() => setRowMenu((current) => current === chat.id ? null : chat.id)}
+              onDismiss={dismissRowMenu} onOpen={() => { dismissRowMenu(); void run(() => open(chat.id)); }} onAction={editChat} />)}
             {historyHasMore && !search.error && <button disabled={disabled || search.loading} onClick={() => {
               if (search.term) search.loadMore();
               else void run(async () => { await list(page + 1, true); });
             }} className="chat-history-more">{search.term ? search.loading ? "Loading..." : "Load more matches" : "Load older chats"}</button>}
           </div>
-          {active && <div className="chat-history-footer">
-            <p>For the open chat</p>
-            <div className="chat-history-actions">
-              <button disabled={disabled} onClick={() => editChat("rename")}><ChatIcon name="pencil" />Rename chat</button>
-              <button disabled={disabled} onClick={() => editChat("delete")} className="is-danger"><ChatIcon name="trash" />Delete chat</button>
-            </div>
-          </div>}
         </nav>}
       </header>
       {(error || accountError || storageError) && <p role="alert" className="shrink-0 bg-red-50 p-4 text-sm text-red-700">{error ?? accountError ?? storageError}</p>}

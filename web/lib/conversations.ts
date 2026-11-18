@@ -42,7 +42,7 @@ export function conversationStore(client: SupabaseClient<Database>, userId: stri
   }
   return {
     async list(page: number, search = "") {
-      let query = table().select("id, title, status, created_at, updated_at").eq("user_id", userId);
+      let query = table().select("id, title, status, created_at, updated_at, first_message_id:messages->0->>id").eq("user_id", userId);
       if (search) {
         // A literal regex avoids PostgREST's LIKE wildcard aliases, including "*".
         query = query.filter("title", "imatch", search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
