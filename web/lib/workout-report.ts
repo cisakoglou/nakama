@@ -118,14 +118,37 @@ type Summary =
   | { kind: "bodyweight"; bestReps: number; totalReps: number; sets: number }
   | { kind: "pace"; distance: number; pace: number; sets: number };
 
+export type ChartSeries = {
+  key: "volume" | "max_weight" | "total_reps";
+  label: string;
+  unit: "kg" | "lb" | "reps";
+  points: { date: string; value: number }[];
+};
+
+/** Payload of a `nakama-chart` block (see CHART-CONTRACT.md). */
+export type ChartData = { v: 1; title: string; current_date: string; series: ChartSeries[] };
+
+export type ExerciseReport = {
+  name: string;
+  /** Plain-text facts for this exercise, without the exercise name prefix. */
+  lines: string[];
+  chart?: ChartData;
+};
+
 export type WorkoutReport = {
   workoutId: string;
   title: string;
   summary: string;
+  exercises: ExerciseReport[];
   achievements: string[];
   patterns: string[];
+  /** Per-exercise facts the reader needs (e.g. first time logged); not generic boilerplate. */
   limitations: string[];
 };
+
+const MAX_CHARTS = 8;
+const MAX_POINTS = 60;
+const MAX_RENDERED_CHARS = 20000;
 
 const HISTORY_DAYS = 90;
 const TREND_SESSIONS = 4;
@@ -263,6 +286,47 @@ function recentHistory(workout: HevyWorkout, history: HevyWorkout[]) {
     });
 }
 
+function isoDay(iso: string) {
+  return /^\d{4}-\d{2}-\d{2}/.exec(iso)?.[0] ?? null;
+}
+
+function round1(value: number) {
+  return Number(value.toFixed(1));
+}
+
+/** 90-day per-session series (oldest first, current workout last); null when it cannot or should not be charted. */
+function buildChart(
+  name: string,
+  workout: HevyWorkout,
+  current: Summary,
+  previousSessions: { exercise: Exercise; start: string }[],
+  units: Units,
+): ChartData | null {
+  if (current.kind === "pace") return null;
+  const sessions: { date: string; summary: Summary }[] = [];
+  for (const session of [...previousSessions].reverse()) {
+    const summary = summarize(session.exercise);
+    const date = isoDay(session.start);
+    if (summary && date && summary.kind === current.kind) sessions.push({ date, summary });
+  }
+  const currentDate = isoDay(workout.start_time);
+  if (!currentDate) return null;
+  sessions.push({ date: currentDate, summary: current });
+  const recent = sessions.slice(-MAX_POINTS);
+  if (recent.length < 2) return null;
+  const convert = (kg: number) => round1(units === "lb" ? kg * KG_TO_LB : kg);
+  const series: ChartSeries[] = current.kind === "bodyweight"
+    ? [{ key: "total_reps", label: "Total reps", unit: "reps",
+      points: recent.map(({ date, summary }) => ({ date, value: round1((summary as typeof current).totalReps) })) }]
+    : [
+      { key: "volume", label: "Total volume", unit: units,
+        points: recent.map(({ date, summary }) => ({ date, value: convert((summary as typeof current).volume) })) },
+      { key: "max_weight", label: "Max weight", unit: units,
+        points: recent.map(({ date, summary }) => ({ date, value: convert((summary as typeof current).topWeight) })) },
+    ];
+  return { v: 1, title: name.slice(0, 80), current_date: currentDate, series };
+}
+
 export function generateWorkoutReport(
   workout: HevyWorkout,
   history: HevyWorkout[],
@@ -273,45 +337,53 @@ export function generateWorkoutReport(
     workoutId: workout.id,
     title: label(workout.title) || "Workout",
     summary: `Logged ${workout.exercises.length} ${workout.exercises.length === 1 ? "exercise" : "exercises"} and ${normalSets} normal working ${normalSets === 1 ? "set" : "sets"}.`,
+    exercises: [],
     achievements: [],
     patterns: [],
     limitations: [],
   };
   const recent = recentHistory(workout, history);
-  let compared = 0;
-  let timed = false;
   const templateIds = workout.exercises.map((exercise) => exercise.exercise_template_id);
 
+  let charts = 0;
   for (const exercise of workout.exercises) {
     const name = label(exercise.title) || "Exercise";
+    const entry: ExerciseReport = { name, lines: [] };
+    report.exercises.push(entry);
+    const add = (kind: "achievements" | "patterns" | "limitations", text: string) => {
+      entry.lines.push(text);
+      report[kind].push(`${name}: ${text}`);
+    };
     if (templateIds.filter((id) => id === exercise.exercise_template_id).length !== 1) {
-      report.limitations.push(`${name}: repeated exercise entries cannot be matched reliably.`);
+      add("limitations", "Repeated exercise entries cannot be matched reliably.");
       continue;
     }
     const current = summarize(exercise);
     if (!current) {
-      report.limitations.push(`${name}: incomplete or unsupported normal-set metrics; no performance comparison made.`);
+      add("limitations", "Incomplete or unsupported normal-set metrics; no performance comparison made.");
       continue;
     }
-    timed ||= current.kind === "pace";
     const previousSessions = recent.flatMap((entry) => {
       const matches = entry.exercises.filter((candidate) =>
         candidate.exercise_template_id === exercise.exercise_template_id);
       return matches.length === 1 ? [{ exercise: matches[0], start: entry.start_time }] : [];
     });
+    if (charts < MAX_CHARTS) {
+      const chart = buildChart(name, workout, current, previousSessions, units);
+      if (chart) { entry.chart = chart; charts++; }
+    }
     if (!previousSessions.length) {
-      report.limitations.push(`${name}: first time logging this exercise in the last ${HISTORY_DAYS} days, so there is nothing to compare yet.`);
+      add("limitations", `First time logging this exercise in the last ${HISTORY_DAYS} days.`);
       continue;
     }
     const dated = previousSessions
       .map((session) => ({ summary: summarize(session.exercise), start: session.start }))
       .filter((entry): entry is { summary: Summary; start: string } => entry.summary !== null && comparable(current, entry.summary));
     if (!dated.length) {
-      report.limitations.push(`${name}: earlier sessions in the last ${HISTORY_DAYS} days have no comparable normal-set metrics.`);
+      add("limitations", `Earlier sessions in the last ${HISTORY_DAYS} days have no comparable normal-set metrics.`);
       continue;
     }
     const previous = dated.map((entry) => entry.summary);
-    compared++;
     // Always the most recent comparable session, never a more favorable older one.
     const baseline = previous[0];
     const series = [current, ...previous.slice(0, TREND_SESSIONS - 1)];
@@ -347,12 +419,10 @@ export function generateWorkoutReport(
     else if (Math.abs(delta) < SAME_E1RM) clauses.push(`about the same as your 3-month best (${bestShown})`);
     else clauses.push(`${number(Math.abs(delta) * 100)}% ${lowerIsBetter ? "slower than" : "below"} your 3-month best (${bestShown})`);
 
-    const comparison = `${name}: ${describe(current, baseline, units, change)} in the previous session of this exercise; ${clauses.join("; ")}.`;
+    const comparison = `${describe(current, baseline, units, change)} in the previous session of this exercise; ${clauses.join("; ")}.`;
     const bestRepsUp = current.kind === "bodyweight" && baseline.kind === "bodyweight" && current.bestReps > baseline.bestReps;
     const achieved = newBest || (current.kind === "pace" ? change >= 0.025 : change >= SAME_E1RM || bestRepsUp);
-    if (achieved) {
-      report.achievements.push(comparison);
-    }
+    if (achieved) add("achievements", comparison);
     const differences = series.slice(0, -1).map((_, index) => gain(index, index + 1));
     const totalChange = gain(0, series.length - 1);
     const trend = series.length === TREND_SESSIONS && Math.abs(totalChange) >= 0.05
@@ -361,24 +431,14 @@ export function generateWorkoutReport(
       const directionLabel = current.kind === "pace"
         ? totalChange > 0 ? "faster" : "slower"
         : totalChange > 0 ? "improving" : "decreasing";
-      report.patterns.push(`${name}: ${directionLabel} ${metric} across ${TREND_SESSIONS} sessions of this exercise (${percent(totalChange)} overall). Training context can explain changes; this is not a health assessment.`);
+      add("patterns", `${directionLabel[0].toUpperCase()}${directionLabel.slice(1)} ${metric} across ${TREND_SESSIONS} sessions of this exercise (${percent(totalChange)} overall).`);
     } else if (change > -0.05 || bestRepsUp) {
       // Not an achievement or established trend: still surface the 3-month context when it differs from "about the same".
-      if (!achieved && notable) report.patterns.push(comparison);
+      if (!achieved && notable) add("patterns", comparison);
+      else if (!achieved) add("patterns", "No notable change in the comparable recorded metrics.");
     } else {
-      report.patterns.push(`${comparison} ${current.kind === "pace" ? "Slower" : "Lower"} this session, not an established trend; ordinary variation or planned training changes can explain it.`);
+      add("patterns", `${comparison} ${current.kind === "pace" ? "Slower" : "Lower"} this session, not an established trend.`);
     }
-  }
-  if (!compared) {
-    report.limitations.unshift("Not enough comparable history yet to assess progress or trends.");
-  }
-  if (compared && !report.achievements.length && !report.patterns.length) {
-    report.patterns.push("No notable change in the comparable recorded metrics; that alone does not establish a plateau.");
-  }
-  report.limitations.push("Each exercise is compared with its most recent previous session, its 3-month average and its 3-month best, all within the last 90 days and even when set counts, loads and reps differ; the average is shown only with at least 3 previous sessions and trends need 4 sessions. Strength changes use an estimated 1RM (Epley formula, sets of 1-12 reps), which is only an estimate; bodyweight exercises use best-set reps; top set and total volume are shown as context. Warmup, dropset and failure sets are excluded, and workout-wide totals are not treated as performance changes.");
-  report.limitations.push("Technique, effort, rest, bodyweight and training intent are not established by these metrics; changes are observations, not diagnoses or all-time records.");
-  if (timed) {
-    report.limitations.push("Distance/time comparisons use recorded activity only. Terrain, elevation, weather, heart rate and GPS are unavailable; activity titles do not prove a run.");
   }
   return report;
 }
@@ -387,18 +447,31 @@ function markdownText(value: string) {
   return value.replace(/[\\`*_{}[\]<>#!|]/g, "\\$&");
 }
 
+function chartBlock(chart: ChartData) {
+  return `\`\`\`nakama-chart\n${JSON.stringify(chart)}\n\`\`\``;
+}
+
+/**
+ * One section per exercise: heading, fact bullets, then its chart block. When the report is too long
+ * whole trailing charts are dropped (never cut mid-block) before any text is truncated.
+ */
 export function renderWorkoutReport(report: WorkoutReport): string {
-  const sections = [
-    `## ${markdownText(label(report.title))}`,
-    markdownText(report.summary),
-    ...([
-      ["What went well", report.achievements],
-      ["Notable observations", report.patterns],
-      ["Comparison limits", report.limitations],
-    ] as const).flatMap(([heading, items]) => items.length
-      ? [`### ${heading}\n${items.map((item) => `- ${markdownText(item)}`).join("\n")}`]
-      : []),
-  ];
-  const rendered = sections.join("\n\n");
-  return rendered.length <= 6000 ? rendered : `${rendered.slice(0, 5996)}\n...`;
+  const head = [`## ${markdownText(label(report.title))}`, markdownText(report.summary)];
+  const build = (maxCharts: number) => {
+    let charts = 0;
+    const sections = report.exercises.flatMap((exercise) => {
+      const chart = exercise.chart && charts < maxCharts ? (charts++, exercise.chart) : undefined;
+      if (!exercise.lines.length && !chart) return [];
+      return [[
+        `### ${markdownText(label(exercise.name))}`,
+        ...(exercise.lines.length ? [exercise.lines.map((line) => `- ${markdownText(line).replace("\\*\\*New 3-month best\\*\\*", "**New 3-month best**")}`).join("\n")] : []),
+        ...(chart ? [chartBlock(chart)] : []),
+      ].join("\n\n")];
+    });
+    return [...head, ...sections].join("\n\n");
+  };
+  let charts = report.exercises.filter((exercise) => exercise.chart).length;
+  let rendered = build(charts);
+  while (rendered.length > MAX_RENDERED_CHARS && charts > 0) rendered = build(--charts);
+  return rendered.length <= MAX_RENDERED_CHARS ? rendered : `${rendered.slice(0, MAX_RENDERED_CHARS - 4)}\n...`;
 }
