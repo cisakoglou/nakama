@@ -97,8 +97,8 @@ const fetchMock = vi.fn(async (input: URL | string, _init?: RequestInit) => {
   const url = new URL(input);
   if (url.pathname.startsWith("/v1/exercise_history/")) {
     const templateId = decodeURIComponent(url.pathname.split("/").pop()!);
-    const from = Date.parse(url.searchParams.get("start_date")!);
-    const to = Date.parse(url.searchParams.get("end_date")!);
+    const from = url.searchParams.has("start_date") ? Date.parse(url.searchParams.get("start_date")!) : -Infinity;
+    const to = url.searchParams.has("end_date") ? Date.parse(url.searchParams.get("end_date")!) : Infinity;
     // Like Hevy: one entry per set, filtered by workout start time.
     const entries = (history as ReturnType<typeof workout>[])
       .filter((past) => Date.parse(past.start_time) >= from && Date.parse(past.start_time) <= to)
@@ -146,7 +146,7 @@ describe("workout report worker", () => {
     expect(db.tables.chat_conversations).toHaveLength(1);
   });
 
-  it("fetches 90-day exercise history once per distinct exercise with start and end dates", async () => {
+  it("fetches full exercise history once per distinct exercise without a date range", async () => {
     const db = fakeDb();
     db.enqueue();
     const fresh = workoutsById[workoutId] as ReturnType<typeof workout>;
@@ -155,10 +155,21 @@ describe("workout report worker", () => {
     const calls = fetchMock.mock.calls.map(([input]) => new URL(input)).filter((url) => url.pathname.startsWith("/v1/exercise_history/"));
     expect(calls.map((url) => url.pathname).sort()).toEqual(["/v1/exercise_history/BENCH", "/v1/exercise_history/SQUAT"]);
     for (const url of calls) {
-      expect(url.searchParams.get("start_date")).toBe("2026-08-14T09:00:00.000Z");
-      expect(url.searchParams.get("end_date")).toBe("2026-11-12T09:00:00.000Z");
+      expect(url.searchParams.has("start_date")).toBe(false);
+      expect(url.searchParams.has("end_date")).toBe(false);
     }
     expect(fetchMock.mock.calls.some(([input]) => new URL(input).pathname === "/v1/workouts")).toBe(false);
+  });
+
+  it("passes older-than-90-day history through for PRs and leaves out later workouts", async () => {
+    const db = fakeDb();
+    db.enqueue();
+    const old = { ...workout("ancient", 1, 120), start_time: "2025-03-14T09:00:00Z", end_time: "2025-03-14T10:00:00Z" };
+    history.push(old);
+    expect(await drain(db)).toMatchObject({ delivered: 1 });
+    expect((mocks.generate.mock.calls[0][1] as { id: string }[]).map((w) => w.id).sort()).toEqual(["ancient", "h1", "h2", "h3"]);
+    const [conversation] = db.tables.chat_conversations as { messages: { content: string }[] }[];
+    expect(conversation.messages[0].content).not.toContain("3-month best");
   });
 
   it("caps exercises at 20 and requests at most 3 histories concurrently", async () => {

@@ -126,7 +126,7 @@ export type ChartSeries = {
 };
 
 /** Payload of a `nakama-chart` block (see CHART-CONTRACT.md). */
-export type ChartData = { v: 1; title: string; current_date: string; series: ChartSeries[] };
+export type ChartData = { v: 2; exercise_template_id: string; title: string; current_date: string; series: ChartSeries[] };
 
 export type ExerciseReport = {
   name: string;
@@ -140,6 +140,8 @@ export type WorkoutReport = {
   title: string;
   summary: string;
   exercises: ExerciseReport[];
+  /** All-time PR lines (also shown first under their exercise). */
+  prs: string[];
   achievements: string[];
   patterns: string[];
   /** Per-exercise facts the reader needs (e.g. first time logged); not generic boilerplate. */
@@ -233,6 +235,65 @@ function shortDate(iso: string) {
   return match ? `${Number(match[2])} ${MONTHS[Number(match[1]) - 1]}` : "an earlier date";
 }
 
+function prDate(iso: string, currentIso: string) {
+  const year = /^(\d{4})/.exec(iso)?.[1];
+  const base = shortDate(iso);
+  return year && year !== /^(\d{4})/.exec(currentIso)?.[1] ? `${base} ${year}` : base;
+}
+
+/** Every earlier session of the exercise (any age), most recent first, for all-time PR detection. */
+function allPreviousSessions(workout: HevyWorkout, history: HevyWorkout[], templateId: string) {
+  const start = Date.parse(workout.start_time);
+  const seen = new Set([workout.id]);
+  return [...history]
+    .filter((entry) => Date.parse(entry.end_time) < start && Date.parse(entry.end_time) >= Date.parse(entry.start_time))
+    .sort((a, b) => Date.parse(b.end_time) - Date.parse(a.end_time))
+    .filter((entry) => {
+      if (seen.has(entry.id)) return false;
+      seen.add(entry.id);
+      return true;
+    })
+    .flatMap((entry) => {
+      const matches = entry.exercises.filter((candidate) => candidate.exercise_template_id === templateId);
+      const summary = matches.length === 1 ? summarize(matches[0]) : null;
+      return summary ? [{ summary, start: entry.start_time }] : [];
+    });
+}
+
+/** All-time PR lines: only when this session strictly beats every earlier session of the exercise. */
+function prLines(current: Summary, earlier: { summary: Summary; start: string }[], workout: HevyWorkout, units: Units) {
+  if (current.kind === "pace") return [];
+  const same = earlier.filter((entry) => entry.summary.kind === current.kind);
+  if (!same.length) return [];
+  const show = (kg: number) => `${number(units === "lb" ? kg * KG_TO_LB : kg)} ${units}`;
+  const round = (kg: number) => Number((units === "lb" ? kg * KG_TO_LB : kg).toFixed(1));
+  const best = (pick: (summary: Summary) => number | null) => {
+    let found: { value: number; start: string } | null = null;
+    for (const entry of same) {
+      const value = pick(entry.summary);
+      if (value !== null && (!found || value > found.value)) found = { value, start: entry.start };
+    }
+    return found;
+  };
+  const lines: string[] = [];
+  if (current.kind === "bodyweight") {
+    const previous = best((summary) => (summary as typeof current).bestReps);
+    if (previous && current.bestReps > previous.value) {
+      lines.push(`🏆 New PR: ${current.bestReps} reps in a set (previous best ${previous.value}, ${prDate(previous.start, workout.start_time)})`);
+    }
+    return lines;
+  }
+  const weight = best((summary) => (summary as typeof current).topWeight);
+  if (weight && round(current.topWeight) > round(weight.value)) {
+    lines.push(`🏆 New PR: heaviest weight ${show(current.topWeight)} (previous best ${show(weight.value)}, ${prDate(weight.start, workout.start_time)})`);
+  }
+  const e1rm = best((summary) => (summary as typeof current).e1rm);
+  if (current.e1rm !== null && e1rm && round(current.e1rm) > round(e1rm.value)) {
+    lines.unshift(`🏆 New PR: estimated 1RM ${show(current.e1rm)} (previous best ${show(e1rm.value)}, ${prDate(e1rm.start, workout.start_time)})`);
+  }
+  return lines;
+}
+
 /** The per-session metric used for every comparison. Higher is better except pace (seconds per km). */
 function primaryValues(series: Summary[]): { values: number[]; name: string; format: (value: number, units: Units) => string } {
   const first = series[0];
@@ -297,6 +358,7 @@ function round1(value: number) {
 /** 90-day per-session series (oldest first, current workout last); null when it cannot or should not be charted. */
 function buildChart(
   name: string,
+  templateId: string,
   workout: HevyWorkout,
   current: Summary,
   previousSessions: { exercise: Exercise; start: string }[],
@@ -324,7 +386,7 @@ function buildChart(
       { key: "max_weight", label: "Max weight", unit: units,
         points: recent.map(({ date, summary }) => ({ date, value: convert((summary as typeof current).topWeight) })) },
     ];
-  return { v: 1, title: name.slice(0, 80), current_date: currentDate, series };
+  return { v: 2, exercise_template_id: templateId, title: name.slice(0, 80), current_date: currentDate, series };
 }
 
 export function generateWorkoutReport(
@@ -338,6 +400,7 @@ export function generateWorkoutReport(
     title: label(workout.title) || "Workout",
     summary: `Logged ${workout.exercises.length} ${workout.exercises.length === 1 ? "exercise" : "exercises"} and ${normalSets} normal working ${normalSets === 1 ? "set" : "sets"}.`,
     exercises: [],
+    prs: [],
     achievements: [],
     patterns: [],
     limitations: [],
@@ -350,7 +413,7 @@ export function generateWorkoutReport(
     const name = label(exercise.title) || "Exercise";
     const entry: ExerciseReport = { name, lines: [] };
     report.exercises.push(entry);
-    const add = (kind: "achievements" | "patterns" | "limitations", text: string) => {
+    const add = (kind: "prs" | "achievements" | "patterns" | "limitations", text: string) => {
       entry.lines.push(text);
       report[kind].push(`${name}: ${text}`);
     };
@@ -363,13 +426,16 @@ export function generateWorkoutReport(
       add("limitations", "Incomplete or unsupported normal-set metrics; no performance comparison made.");
       continue;
     }
+    for (const line of prLines(current, allPreviousSessions(workout, history, exercise.exercise_template_id), workout, units)) {
+      add("prs", line);
+    }
     const previousSessions = recent.flatMap((entry) => {
       const matches = entry.exercises.filter((candidate) =>
         candidate.exercise_template_id === exercise.exercise_template_id);
       return matches.length === 1 ? [{ exercise: matches[0], start: entry.start_time }] : [];
     });
     if (charts < MAX_CHARTS) {
-      const chart = buildChart(name, workout, current, previousSessions, units);
+      const chart = buildChart(name, exercise.exercise_template_id, workout, current, previousSessions, units);
       if (chart) { entry.chart = chart; charts++; }
     }
     if (!previousSessions.length) {
@@ -408,20 +474,9 @@ export function generateWorkoutReport(
         : lowerIsBetter ? `${number(Math.abs(delta) * 100)}% ${delta > 0 ? "faster" : "slower"} than your 3-month average (${shown})`
         : `${percent(delta)} vs your 3-month average (${shown})`);
     }
-    const bestIndex = earlier.reduce((best, value, index) =>
-      (lowerIsBetter ? value < earlier[best] : value > earlier[best]) ? index : best, 0);
-    const bestValue = earlier[bestIndex];
-    const bestShown = `${all.format(bestValue, units)}, ${shortDate(dated[bestIndex].start)}`;
-    const delta = relative(bestValue);
-    notable ||= Math.abs(delta) >= SAME_E1RM;
-    const newBest = delta >= SAME_E1RM || (current.kind === "bodyweight" && delta > 0);
-    if (newBest) clauses.push(`**New 3-month best** (previous ${bestShown})`);
-    else if (Math.abs(delta) < SAME_E1RM) clauses.push(`about the same as your 3-month best (${bestShown})`);
-    else clauses.push(`${number(Math.abs(delta) * 100)}% ${lowerIsBetter ? "slower than" : "below"} your 3-month best (${bestShown})`);
-
-    const comparison = `${describe(current, baseline, units, change)} in the previous session of this exercise; ${clauses.join("; ")}.`;
+    const comparison = `${describe(current, baseline, units, change)} in the previous session of this exercise${clauses.length ? `; ${clauses.join("; ")}` : ""}.`;
     const bestRepsUp = current.kind === "bodyweight" && baseline.kind === "bodyweight" && current.bestReps > baseline.bestReps;
-    const achieved = newBest || (current.kind === "pace" ? change >= 0.025 : change >= SAME_E1RM || bestRepsUp);
+    const achieved = current.kind === "pace" ? change >= 0.025 : change >= SAME_E1RM || bestRepsUp;
     if (achieved) add("achievements", comparison);
     const differences = series.slice(0, -1).map((_, index) => gain(index, index + 1));
     const totalChange = gain(0, series.length - 1);
@@ -468,7 +523,7 @@ export function renderWorkoutReport(report: WorkoutReport): string {
       if (!exercise.lines.length && !chart) return [];
       return [[
         `### ${markdownText(label(exercise.name))}`,
-        ...(exercise.lines.length ? [exercise.lines.map((line) => `- ${capitalize(markdownText(line).replace("\\*\\*New 3-month best\\*\\*", "**New 3-month best**"))}`).join("\n")] : []),
+        ...(exercise.lines.length ? [exercise.lines.map((line) => `- ${capitalize(markdownText(line))}`).join("\n")] : []),
         ...(chart ? [chartBlock(chart)] : []),
       ].join("\n\n")];
     });
