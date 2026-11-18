@@ -35,11 +35,13 @@ describe("public feature catalog contract", () => {
     expect(FEATURE_LIMITATIONS.join(" ")).toContain("Everyone can browse this page");
   });
 
-  it("describes shipped in-app reports without promising unshipped channels or guaranteed outcomes", () => {
+  it("describes reports and opt-in browser notifications without promising email or guaranteed outcomes", () => {
     const copy = FEATURES.flatMap((feature) => [feature.title, feature.summary, ...feature.details]).join(" ");
-    expect(copy).not.toMatch(/\b(?:push|email) notifications?\b|\boffline\b|\bguaranteed\b|\bsubscription tiers?\b/i);
-    expect(FEATURES[0].details.join(" ")).toContain("in-app chat");
-    expect(FEATURE_LIMITATIONS.join(" ")).toContain("not push or email notifications");
+    expect(copy).not.toMatch(/\bemail notifications?\b|\boffline\b|\bguaranteed\b|\bsubscription tiers?\b/i);
+    expect(FEATURES[0].details.join(" ")).toContain("optional browser notifications on supported devices");
+    expect(FEATURE_LIMITATIONS.join(" ")).toContain("device support and permission");
+    expect(FEATURE_LIMITATIONS.join(" ")).toContain("one-time Hevy webhook setup");
+    expect(FEATURE_LIMITATIONS.join(" ")).toContain("Report emails are not available");
     expect(FEATURE_LIMITATIONS.join(" ")).toContain("not medical assessments");
   });
 });

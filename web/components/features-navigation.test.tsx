@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SignInForm } from "./sign-in-form";
 import { ChatPanel } from "./chat-panel";
+import Home from "@/app/page";
 
 const mocks = vi.hoisted(() => ({ client: vi.fn(), fetch: vi.fn() }));
 vi.mock("@/lib/supabase/client", () => ({ createClient: mocks.client }));
@@ -17,6 +18,14 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe("public feature discoverability", () => {
+  it("explains the product and exposes the public page before account loading finishes", () => {
+    const html = renderToStaticMarkup(<Home />);
+    expect(html).toContain("Automatic workout reports and AI coaching based on your Hevy history.");
+    expect(html).toMatch(/<a\b[^>]*href="\/features"[^>]*>Explore Nakama<\/a>/);
+    expect(html).toContain("Checking your sign-in");
+    expect(mocks.client).not.toHaveBeenCalled();
+    expect(mocks.fetch).not.toHaveBeenCalled();
+  });
   it.each([undefined, "Your sign-in link expired."])("renders the public Features link without account or connection data (%#)", (message) => {
     const html = renderToStaticMarkup(<SignInForm message={message} onRefresh={() => {}} />);
     expect(html).toMatch(/<a\b[^>]*href="\/features"[^>]*>See what Nakama can do<\/a>/);

@@ -18,7 +18,6 @@ describe("public features page", () => {
     const featured = FEATURES.find((feature) => feature.featured)!;
     for (const feature of FEATURES) {
       expect(html).toContain(`id="${feature.id}"`);
-      expect(html).toContain(`href="#${feature.id}"`);
       expect(decode(html)).toContain(feature.summary);
       for (const detail of feature.details) expect(decode(html)).toContain(detail);
     }
@@ -26,6 +25,29 @@ describe("public features page", () => {
       Math.min(...FEATURES.filter((f) => f !== featured).map((f) => html.indexOf(`id="${f.id}"`))),
     );
     expect(html.match(/<h1[ >]/g)).toHaveLength(1);
+  });
+
+  it("leads with a clearly labelled, accessible sample chart rather than hiding interactive controls", () => {
+    expect(html.indexOf('id="sample-report"')).toBeLessThan(html.indexOf('id="post-workout-reports"'));
+    expect(html).toContain('role="img"');
+    expect(html).toContain('aria-label="Bench Press progress"');
+    expect(html).toContain("Example report");
+    expect(html).not.toContain("Chart unavailable");
+    const example = html.match(/<div id="sample-report">[\s\S]*?<\/section>/)?.[0];
+    expect(example).not.toContain('aria-hidden="true"><div class="fx-window');
+    expect(example).toContain("<summary>Show data</summary>");
+  });
+
+  it("keeps all internal navigation targets present and technical setup collapsed", () => {
+    const ids = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]));
+    for (const match of html.matchAll(/href="#([^"]+)"/g)) expect(ids.has(match[1])).toBe(true);
+    expect(ids.size).toBe([...html.matchAll(/\bid="([^"]+)"/g)].length);
+    expect(html).toContain('id="why-nakama"');
+    const setup = html.match(/<details class="fx-reliability">[\s\S]*?<\/details>/)?.[0];
+    expect(setup).toContain("authorization header");
+    expect(setup).toContain("Anthropic");
+    expect(html.match(/class="fx-step"/g)).toHaveLength(3);
+    expect(html).not.toContain('class="fx-requirements"');
   });
 
   it("states requirements and honest limits, and links to sign-in", () => {

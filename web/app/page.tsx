@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { BrandLockup } from "@/components/brand-lockup";
 import { TrainingLoader } from "@/components/training-loader";
 import { SignInForm } from "@/components/sign-in-form";
@@ -116,7 +117,13 @@ export default function Home() {
       <div className="w-full max-w-lg">
         <BrandLockup className="account-brand mx-auto mb-9" />
         <section className="account-card rounded-3xl border border-line bg-surface p-6 shadow-[0_20px_60px_-25px_rgba(52,52,45,0.22)] sm:p-8">
-          {screen.kind === "loading" && <TrainingLoader />}
+          {screen.kind === "loading" && <>
+            <p className="eyebrow text-brand">Your Hevy training companion</p>
+            <h1 className="mt-3 text-3xl font-semibold tracking-tight">Your training, put in perspective.</h1>
+            <p className="mt-3 text-sm leading-6 text-ink-muted">Automatic workout reports and AI coaching based on your Hevy history.</p>
+            <Link href="/features" className="mt-5 inline-flex min-h-11 items-center text-sm font-semibold text-brand underline underline-offset-4">Explore Nakama</Link>
+            <div className="mt-5 border-t border-line pt-4"><TrainingLoader label="Checking your sign-in" /></div>
+          </>}
           {screen.kind === "sign-in" && <SignInForm message={screen.message} onRefresh={reloadAccount} />}
           {screen.kind === "error" && (
             <>

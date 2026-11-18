@@ -35,13 +35,12 @@ export const FEATURE_REQUIREMENTS: Record<FeatureRequirement, { label: string; d
 export const FEATURES: readonly Feature[] = [
   {
     id: "post-workout-reports",
-    title: "Your workout, put in perspective",
-    summary: "Save a workout in Hevy. With reports set up, Nakama adds a grounded look at what changed to your saved chats.",
+    title: "Know what changed after every workout",
+    summary: "Finish a workout in Hevy. After a one-time report setup, get a clear look at what improved and which patterns are worth watching.",
     details: [
-      "A Hevy webhook triggers a report delivered as an in-app chat, not a separate notification channel.",
-      "Compares recorded exercise metrics with recent comparable sets, rather than unrelated workout totals.",
-      "Distinguishes a one-session change from a repeated trend and explains missing or unsupported data.",
-      "One report per workout: duplicate saves do not create extra report chats.",
+      "See progress and repeated dips against recent sessions of the same exercises.",
+      "Follow exercise charts for volume, maximum weight or total reps, when enough history is available.",
+      "Revisit each report in your saved chats, with optional browser notifications on supported devices.",
     ],
     status: "new",
     requirements: ["invite", "hevy-pro", "hevy-connection", "webhook-setup"],
@@ -50,12 +49,12 @@ export const FEATURES: readonly Feature[] = [
   },
   {
     id: "grounded-coaching",
-    title: "Coaching with your training in view",
-    summary: "Ask about progress, your next session or a new routine, with guidance informed by your Hevy history and saved preferences.",
+    title: "Get coaching based on your actual training",
+    summary: "Wondering what to aim for next? Ask questions with an AI companion that can use your Hevy history and saved training preferences.",
     details: [
-      "Nakama can read your Hevy workouts through connected tools when you ask for coaching.",
-      "Your goal, experience, schedule, equipment and preferred weight units provide training context.",
-      "Ask for next-session targets or routine ideas; coaching is guidance, not a promise of results.",
+      "Explore a plateau, talk through your progress or plan your next session.",
+      "Your goals, experience, schedule and equipment give the conversation context.",
+      "Get suggestions grounded in your recorded workouts, rather than retyping your history into a blank chat.",
     ],
     status: "available",
     requirements: ["invite", "hevy-pro", "hevy-connection"],
@@ -63,12 +62,11 @@ export const FEATURES: readonly Feature[] = [
   },
   {
     id: "write-approval",
-    title: "Your approval. Your next move.",
-    summary: "Review a proposed Hevy change before it runs. Reading your training history does not require the same write approval.",
+    title: "Improve your routine. Stay in control.",
+    summary: "Turn a conversation into a new or updated Hevy routine. You review and approve the proposed change before it runs.",
     details: [
-      "Creating or changing Hevy records requires an explicit approval in chat.",
-      "You can approve or decline a proposed change before the connected tool executes.",
-      "Interrupted actions and failed writes are not blindly retried; check Hevy before repeating an uncertain change.",
+      "Build a routine around your goals and the equipment you have.",
+      "Approve or decline Hevy changes in chat. Nothing is changed without your go-ahead.",
     ],
     status: "available",
     requirements: ["invite", "hevy-pro", "hevy-connection"],
@@ -76,13 +74,12 @@ export const FEATURES: readonly Feature[] = [
   },
   {
     id: "saved-chats",
-    title: "Pick up where you left off",
-    summary: "Keep coaching conversations and workout reports in your account, with saved drafts and a history you can return to.",
+    title: "Your training conversations, in one place",
+    summary: "Your workout reports, coaching chats and saved drafts stay together, ready when you want to pick things up again.",
     details: [
-      "Open saved conversation text from your chat history across visits.",
-      "Drafts save to your account, with browser recovery when available.",
-      "Start, rename or delete chats from your training space.",
-      "Old tool results and approvals are not replayed when a conversation is restored.",
+      "Search saved chat names to find an earlier report or conversation.",
+      "Rename or delete a chat straight from the list, without opening it.",
+      "Return to your saved conversations and drafts across visits.",
     ],
     status: "available",
     requirements: ["invite", "hevy-pro", "hevy-connection"],
@@ -90,13 +87,11 @@ export const FEATURES: readonly Feature[] = [
   },
   {
     id: "private-settings",
-    title: "A training space of your own",
-    summary: "Save preferences to your Nakama account and manage your own Hevy connection without sharing a Hevy password.",
+    title: "Built around your goals and preferences",
+    summary: "Set your training context once, so you do not have to explain your goals and setup at the start of every coaching chat.",
     details: [
-      "Set your goal, experience, training days, equipment and kg or lb display preference.",
-      "Your saved Hevy API key is encrypted on the server and is not included in the coaching prompt.",
-      "Disconnect removes the key from Nakama, not your Hevy workouts; revoke the key in Hevy to disable it elsewhere.",
-      "Turn reports off in Nakama; remove the webhook in Hevy to stop Hevy sending events.",
+      "Save your goals, experience, training days, equipment and preferred weight units.",
+      "Manage your own Hevy connection without sharing your Hevy password.",
     ],
     status: "available",
     requirements: ["invite"],
@@ -105,7 +100,35 @@ export const FEATURES: readonly Feature[] = [
 ];
 
 export const FEATURE_LIMITATIONS: readonly string[] = [
-  "Everyone can browse this page. Using Nakama still requires an invitation; Hevy-powered features also require Hevy Pro and a connected API key.",
-  "Automatic workout reports appear in saved chats, not push or email notifications, and require webhook setup.",
+  "Everyone can browse this page. Nakama is an invite-only beta; Hevy-powered features require Hevy Pro and your own connected API key.",
+  "Automatic reports need a one-time Hevy webhook setup and enough recorded history for meaningful comparisons. They are not instant or guaranteed for every exercise.",
+  "Browser notifications are optional and require device support and permission. On iPhone, install Nakama on your Home Screen first. Report emails are not available.",
   "Reports and coaching reflect available training data. They are not medical assessments or guarantees of progress.",
 ];
+
+export const FEATURE_RELIABILITY = [
+  {
+    title: "Your data and AI coaching",
+    details: [
+      "Your chats and preferences are private to your Nakama account. AI coaching sends your conversation and relevant training context to Anthropic.",
+      "Your saved Hevy API key is encrypted on the server and is not included in the coaching prompt. Nakama does not ask for your Hevy password.",
+    ],
+  },
+  {
+    title: "How automatic reports work",
+    details: [
+      "Reports compare recorded exercise metrics and recent history in your preferred weight units. Your saved goals inform AI coaching, not the automatic report calculations.",
+      "A report is saved as an in-app chat after Hevy sends a workout event. Duplicate events do not create extra report chats, and missing data can limit comparisons.",
+      "Charts show supported metrics for each exercise when enough history is available. The examples on this page use illustrative data, not a real account.",
+    ],
+  },
+  {
+    title: "You stay in control",
+    details: [
+      "Reading your workouts does not need write approval. Creating or updating Hevy records requires your explicit approval in chat.",
+      "Restoring a chat does not replay old tool actions. If a change is interrupted, check Hevy before repeating it.",
+      "Disconnecting removes the saved key from Nakama, not your Hevy workouts. Revoke the key in Hevy to disable it elsewhere.",
+      "Turn reports off in Nakama and remove the webhook in Hevy to stop workout events being sent.",
+    ],
+  },
+] as const;

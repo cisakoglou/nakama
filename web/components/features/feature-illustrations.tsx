@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { BrandMark } from "@/components/brand-lockup";
+import { ReportChart, type ChartBlock } from "@/components/report-chart";
 import type { FeatureIllustration as IllustrationKind } from "@/lib/feature-catalog";
 
 function ChatMessage({ children }: { children: ReactNode }) {
@@ -7,19 +8,33 @@ function ChatMessage({ children }: { children: ReactNode }) {
 }
 
 function WorkoutReport() {
+  const chart: ChartBlock = {
+    v: 1, title: "Bench Press", current_date: "2026-11-18",
+    series: [{
+      key: "max_weight", label: "Max weight", unit: "kg",
+      points: [
+        { date: "2026-10-28", value: 57.5 }, { date: "2026-11-04", value: 60 },
+        { date: "2026-11-11", value: 60 }, { date: "2026-11-18", value: 62.5 },
+      ],
+    }],
+  };
   return (
-    <div className="fx-window">
-      <div className="fx-window-bar"><span>Chats</span><strong>Workout report: Push Day</strong></div>
-      <ChatMessage>
-        <p className="fx-report-title">Push Day</p>
-        <p className="fx-muted">Compared with your recent sessions of the same exercises.</p>
-        <p className="fx-heading">What went well</p>
-        <ul><li><b className="fx-up">▲</b> Bench Press: 3 × 8 at 62.5 kg, up from 60 kg</li></ul>
-        <p className="fx-heading">Notable observations</p>
-        <ul><li><b className="fx-flat">●</b> Overhead Press: same load and reps for three sessions</li></ul>
-        <p className="fx-heading">Comparison limits</p>
-        <ul><li className="fx-muted">Only matching exercises and set layouts are compared.</li></ul>
-      </ChatMessage>
+    <div className="fx-window fx-report-example">
+      <div className="fx-window-bar"><span>Push Day · Example report</span><BrandMark className="fx-message-mark" /></div>
+      <div>
+        <p className="eyebrow">What went well</p>
+        <p className="fx-report-title">Bench press moved up.</p>
+        <p className="fx-muted">Three sets of eight, with more on the bar.</p>
+        <dl className="fx-report-comparison">
+          <div><dt>Previous session</dt><dd>60 <span>kg</span></dd></div>
+          <div><dt>This session</dt><dd>62.5 <span>kg</span></dd></div>
+        </dl>
+        <ReportChart text={JSON.stringify(chart)} />
+      </div>
+      <div className="fx-report-watch">
+        <p className="eyebrow">Worth watching</p>
+        <p>Overhead press has stayed at the same load and reps for three sessions. A pattern to review, not a verdict.</p>
+      </div>
     </div>
   );
 }
@@ -93,7 +108,7 @@ export function FeatureIllustration({ kind }: { kind?: IllustrationKind }) {
   const Illustration = kind ? ILLUSTRATIONS[kind] : Fallback;
   return (
     <figure className="fx-figure">
-      <div aria-hidden="true"><Illustration /></div>
+      <div aria-hidden={kind === "workout-report" ? undefined : true}><Illustration /></div>
       {kind && <figcaption>Illustration with sample data</figcaption>}
     </figure>
   );
