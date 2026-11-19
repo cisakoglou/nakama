@@ -138,7 +138,7 @@ export default function Home() {
             <div className="mt-5 border-t border-line pt-4"><TrainingLoader label="Checking your sign-in" /></div>
           </>}
           {screen.kind === "sign-in" && <>
-            {oauthReturn && <OAuthReturnNotice result={oauthReturn} connection={{ connected: false }} />}
+            {oauthReturn && <div className="mb-5"><OAuthReturnNotice result={oauthReturn} connection={{ connected: false }} /></div>}
             <SignInForm message={screen.message} onRefresh={reloadAccount} />
           </>}
           {screen.kind === "error" && (
