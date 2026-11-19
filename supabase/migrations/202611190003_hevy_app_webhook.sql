@@ -68,12 +68,13 @@ returns jsonb language sql stable security definer set search_path = '' as $$
       select jsonb_build_object(
         'status', case
           when r.status = 'delivered' then 'delivered'
-          when r.status = 'skipped' or (r.status = 'failed' and r.attempts >= p_max_attempts) then 'failed'
+          when r.status = 'failed' and r.attempts >= p_max_attempts then 'failed'
           else 'pending' end,
         'at', r.updated_at,
         'conversation_id', case when r.status = 'delivered' then r.conversation_id end)
       from public.workout_reports r
-      where r.user_id = p_user_id and r.connection_revision = current_connection.revision
+      -- Skipped jobs (reports turned off, connection changed) are not failures and are never shown.
+      where r.user_id = p_user_id and r.connection_revision = current_connection.revision and r.status <> 'skipped'
       order by r.created_at desc limit 1)
   )
   from (

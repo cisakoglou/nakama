@@ -11,7 +11,15 @@ export const runtime = "nodejs";
 const CALLBACK_ERROR_CODES: ReadonlySet<string> = new Set([
   "access_denied", "invalid_state", "account_in_use", "account_mismatch", "connection_changed", "migration_required",
   "missing_scope", "not_eligible", "provider_unavailable", "configuration_unavailable", "reconnect_required", "refresh_busy",
+  "signed_out",
 ]);
+
+function errorRedirect(origin: string, code: string) {
+  const target = new URL("/", origin);
+  target.searchParams.set("hevy_oauth", "error");
+  target.searchParams.set("code", CALLBACK_ERROR_CODES.has(code) ? code : "unknown");
+  return NextResponse.redirect(target, 303);
+}
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
@@ -26,7 +34,15 @@ export async function GET(request: NextRequest) {
     return response;
   }
   const access = await requireBetaUser(request);
-  if (!access.ok) return finish(access.response);
+  if (!access.ok) {
+    // No usable Nakama session in this browser (e.g. an iPhone home-screen app and Safari keep separate sessions).
+    // Server-side failures (503) are not the user's sign-in state, so they map to "unknown".
+    const status = access.response.status;
+    const redirect = errorRedirect(origin, status === 401 || status === 403 ? "signed_out" : "unknown");
+    // Keep any session-cookie changes the auth check made (e.g. clearing an expired session).
+    for (const cookie of access.response.cookies.getAll()) redirect.cookies.set(cookie);
+    return finish(redirect);
+  }
   try {
     const params = request.nextUrl.searchParams;
     if (["state", "code", "error"].some(key => params.getAll(key).length > 1)) {
@@ -43,10 +59,6 @@ export async function GET(request: NextRequest) {
   } catch (error) {
     if (!(error instanceof HevyConnectionError)) throw error;
     // Only the enum code reaches the URL: never provider text, codes or tokens.
-    const code = error instanceof HevyOAuthError && CALLBACK_ERROR_CODES.has(error.code) ? error.code : "unknown";
-    const target = new URL("/", origin);
-    target.searchParams.set("hevy_oauth", "error");
-    target.searchParams.set("code", code);
-    return finish(access.session.respond(NextResponse.redirect(target, 303)));
+    return finish(access.session.respond(errorRedirect(origin, error instanceof HevyOAuthError ? error.code : "unknown")));
   }
 }

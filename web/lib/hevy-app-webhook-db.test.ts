@@ -125,11 +125,23 @@ describe("report preference and status", () => {
     expect((await status())!.last_report).toMatchObject({ status: "pending", conversation_id: null });
     await db.query("update public.workout_reports set attempts = 5");
     expect((await status())!.last_report).toMatchObject({ status: "failed", conversation_id: null });
-    await db.query("update public.workout_reports set status = 'skipped'");
-    expect((await status())!.last_report).toMatchObject({ status: "failed" });
     await db.query("update public.workout_reports set status = 'delivered'");
     const { conversation_id } = (await db.query<{ conversation_id: string }>("select conversation_id from public.workout_reports")).rows[0];
     expect((await status())!.last_report).toMatchObject({ status: "delivered", conversation_id });
+  });
+
+  it("never shows skipped jobs (opt-out or connection change) as the last report", async () => {
+    await connect();
+    await accept();
+    await db.query("update public.workout_reports set status = 'delivered', created_at = now() - interval '1 day'");
+    const { conversation_id } = (await db.query<{ conversation_id: string }>("select conversation_id from public.workout_reports")).rows[0];
+    await accept(provider, "22222222-2222-4222-8222-222222222222");
+    await db.query("update public.workout_reports set status = 'skipped', last_error = 'reports_off' where workout_id = $1",
+      ["22222222-2222-4222-8222-222222222222"]);
+    // The newer skipped job is ignored; the older delivered one is shown.
+    expect((await status())!.last_report).toMatchObject({ status: "delivered", conversation_id });
+    await db.query("update public.workout_reports set status = 'skipped'");
+    expect((await status())!.last_report).toBeNull();
   });
 
   it("keeps the preference across reconnects of the same Hevy account, and token refresh", async () => {

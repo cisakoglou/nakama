@@ -265,7 +265,10 @@ Contract for the onboarding work in #20:
   `303` to `/?hevy_oauth=connected`. Failures return `303` to
   `/?hevy_oauth=error&code=<code>`, where `code` is one of the enum values in
   the shared reports contract (`access_denied`, `invalid_state`, ...) or
-  `unknown`; no provider text or tokens reach the URL.
+  `unknown`; no provider text or tokens reach the URL. A callback without a
+  Nakama session in that browser (401/403, e.g. an iPhone home-screen app and
+  Safari keep separate sessions) redirects with `code=signed_out`; other
+  sign-in check failures use `unknown`.
   The cookie is cleared and responses prevent caching/referrer leakage.
 - Existing `GET /api/account` keeps the legacy connection shape. OAuth adds
   `method: "oauth"`, `state: "active" | "reconnect_required"`, `hevy_user_id`
@@ -389,7 +392,9 @@ Nakama user and Hevy account, outside `hevy_connections`, so it survives a
 disconnect/reconnect of the same Hevy account and is never touched by token
 refresh; a different Hevy account starts enabled. `last_received_at` counts
 only signed events for the current connection revision. `last_report` is the
-newest job for that revision; `pending` covers queued and retrying jobs.
+newest job for that revision that was not skipped (turning reports off or a
+connection change is not a failure, so those jobs are never shown); `pending`
+covers queued and retrying jobs.
 `delivered` is reported only after the chat is saved.
 
 Turning reports off stops new jobs at once. The worker re-checks the

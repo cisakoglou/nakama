@@ -115,13 +115,25 @@ describe("OAuth routes", () => {
     expect(mocks.complete).not.toHaveBeenCalled();
   });
 
-  it.each([401, 403, 503])("does not start or complete OAuth without verified beta access (%s)", async status => {
-    mocks.auth.mockResolvedValue({ ok: false, response: NextResponse.json({ error: "Access unavailable." }, { status }) });
-    expect((await POST(new NextRequest("https://nakama.test/api/hevy/oauth/start", {
-      method: "POST", headers: { origin: "https://nakama.test" },
-    }))).status).toBe(status);
-    expect((await GET(new NextRequest("https://nakama.test/api/hevy/oauth/callback?code=secret"))).status).toBe(status);
-    expect(mocks.begin).not.toHaveBeenCalled();
-    expect(mocks.complete).not.toHaveBeenCalled();
-  });
+  it.each([[401, "signed_out"], [403, "signed_out"], [503, "unknown"]] as const)(
+    "does not start or complete OAuth without verified beta access (%s -> %s)", async (status, code) => {
+      const denied = NextResponse.json({ error: "Access unavailable." }, { status });
+      denied.cookies.set("sb-session", "", { maxAge: 0 });
+      mocks.auth.mockResolvedValue({ ok: false, response: denied });
+      expect((await POST(new NextRequest("https://nakama.test/api/hevy/oauth/start", {
+        method: "POST", headers: { origin: "https://nakama.test" },
+      }))).status).toBe(status);
+      // The callback lands in a browser: redirect back into the app instead of showing JSON.
+      const response = await GET(new NextRequest("https://nakama.test/api/hevy/oauth/callback?state=s&code=secret"));
+      expect(response.status).toBe(303);
+      expect(response.headers.get("location")).toBe(`https://nakama.test/?hevy_oauth=error&code=${code}`);
+      expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+      expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
+      expect(response.cookies.get("hevy_oauth_browser")?.maxAge).toBe(0);
+      // Session cookie changes from the auth check are kept.
+      expect(response.cookies.get("sb-session")?.maxAge).toBe(0);
+      expect(mocks.begin).not.toHaveBeenCalled();
+      expect(mocks.complete).not.toHaveBeenCalled();
+    },
+  );
 });
