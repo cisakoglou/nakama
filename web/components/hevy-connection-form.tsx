@@ -1,12 +1,18 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { z } from "zod";
 import { readApiResponse } from "@/lib/api-response";
+import {
+  canRetryOAuth, oauthErrorMessage, OAuthStartError, startHevyOAuth, type OAuthReturn,
+} from "@/lib/hevy-connect-client";
 import { connectionSchema, type HevyConnection } from "@/lib/hevy-types";
 
-export function HevyConnectionForm({ connection, onChanged }: {
-  connection: HevyConnection; onChanged: () => void;
+type OAuthConnection = Extract<HevyConnection, { connected: true }>;
+
+/** Existing API-key connection flow, unchanged for legacy users and kept as a secondary path for new ones. */
+export function LegacyKeyConnection({ connection, onChanged, embedded = false }: {
+  connection: HevyConnection; onChanged: () => void; embedded?: boolean;
 }) {
   const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState(false);
@@ -49,9 +55,10 @@ export function HevyConnectionForm({ connection, onChanged }: {
     } finally { setBusy(false); }
   }
 
+  const Wrapper = embedded ? "div" : "section";
   return (
-    <section aria-labelledby="hevy-heading" className="mt-6 rounded-2xl border border-line p-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+    <Wrapper {...(embedded ? {} : { "aria-labelledby": "hevy-heading", className: "mt-6 rounded-2xl border border-line p-5" })}>
+      {!embedded && <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 id="hevy-heading" className="text-lg font-semibold">
           {connection.connected
             ? replacing ? "Replace your Hevy key" : "Hevy connected"
@@ -60,7 +67,7 @@ export function HevyConnectionForm({ connection, onChanged }: {
         <span className="rounded-full bg-brand-soft px-3 py-1 text-xs font-medium text-brand">
           {connection.connected ? "Connected" : "One-time setup"}
         </span>
-      </div>
+      </div>}
       {connection.connected && (
         <p className="mt-3 text-sm leading-6 text-ink-muted">
           {replacing
@@ -163,7 +170,7 @@ export function HevyConnectionForm({ connection, onChanged }: {
         </div>
       )}
       {error && <p role="alert" className="mt-4 text-sm text-red-700">{error}</p>}
-      <details open={showSetup} className="mt-4">
+      <details open={showSetup && !embedded} className="mt-4">
         <summary className="min-h-11 cursor-pointer py-3 text-sm font-medium">Privacy and control</summary>
         <p className="text-sm leading-6 text-ink-muted">
           Your Nakama uses your workouts and saved preferences to give you grounded guidance through Anthropic.
@@ -177,6 +184,157 @@ export function HevyConnectionForm({ connection, onChanged }: {
           </p>
         )}
       </details>
+      {!embedded && connection.connected && (
+        <p className="mt-3 text-xs leading-5 text-ink-muted">A simpler way to connect Hevy is coming. Your current connection keeps working.</p>
+      )}
+    </Wrapper>
+  );
+}
+
+const card = "mt-6 rounded-2xl border border-line p-5";
+const primaryButton = "min-h-11 w-full rounded-xl bg-brand px-4 py-3 text-sm font-semibold hover:bg-brand-hover focus:outline-none focus:ring-2 focus:ring-brand/40 disabled:opacity-50";
+const linkButton = "min-h-11 text-sm underline underline-offset-4 focus:outline-none focus:ring-2 focus:ring-brand/40 disabled:opacity-50";
+
+/** Result of coming back from Hevy. The query parameter is a hint; `connection` is the real, reloaded state. */
+export function OAuthReturnNotice({ result, connection, busy = false, onRetry }: {
+  result: OAuthReturn; connection: HevyConnection; busy?: boolean; onRetry?: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => { ref.current?.focus(); }, []);
+  if (result.kind === "connected") {
+    const ok = connection.connected && connection.method === "oauth" && connection.state !== "reconnect_required";
+    return (
+      <div ref={ref} tabIndex={-1} role="status" className="mt-4 rounded-xl border border-line bg-canvas p-4 text-sm leading-6 focus:outline-none focus:ring-2 focus:ring-brand/40">
+        {ok
+          ? "Hevy is connected. Your workouts can now be read."
+          : "We could not confirm the Hevy connection yet. Check the state below and try again if needed."}
+      </div>
+    );
+  }
+  return (
+    <div ref={ref} tabIndex={-1} role="alert" className="mt-4 rounded-xl border border-line bg-canvas p-4 text-sm leading-6 focus:outline-none focus:ring-2 focus:ring-brand/40">
+      <p>{oauthErrorMessage(result.code)}</p>
+      {onRetry && canRetryOAuth(result.code) && (
+        <button type="button" onClick={onRetry} disabled={busy} className={`${linkButton} mt-1`}>
+          {busy ? "Opening Hevy..." : "Try again"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** Presentational Connect/OAuth card; state and fetches live in HevyConnectionForm. */
+export function HevyConnectView({ connection, busy, error, oauthReturn, onConnect, onDisconnect, legacy }: {
+  connection: HevyConnection;
+  busy: boolean;
+  error: string | null;
+  oauthReturn: OAuthReturn | null;
+  onConnect: () => void;
+  onDisconnect: () => void;
+  legacy: React.ReactNode;
+}) {
+  const oauth: OAuthConnection | null = connection.connected && connection.method === "oauth" ? connection : null;
+  const reconnect = oauth?.state === "reconnect_required";
+  return (
+    <section aria-labelledby="hevy-heading" className={card}>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 id="hevy-heading" className="text-lg font-semibold">{oauth ? "Hevy connection" : "Connect your Hevy account"}</h2>
+        <span className="rounded-full bg-brand-soft px-3 py-1 text-xs font-medium text-brand">
+          {oauth ? (reconnect ? "Reconnect required" : "Connected") : "One-time setup"}
+        </span>
+      </div>
+      {oauthReturn && <OAuthReturnNotice result={oauthReturn} connection={connection} busy={busy} onRetry={onConnect} />}
+      {!oauth && (
+        <>
+          <p className="mt-3 text-sm leading-6 text-ink-muted">
+            You will approve Nakama in Hevy. Nakama asks to read your workouts and exercises, and to create or update
+            routines and workouts only when you approve each change in chat.
+          </p>
+          <p className="mt-2 text-sm leading-6 text-ink-muted">
+            Automatic workout reports will be turned on after you connect. You can turn them off later.
+          </p>
+          <button type="button" onClick={onConnect} disabled={busy} className={`${primaryButton} mt-4`}>
+            {busy ? "Opening Hevy..." : "Connect Hevy"}
+          </button>
+          <details className="mt-4">
+            <summary className="min-h-11 cursor-pointer py-3 text-sm font-medium">Use an API key instead</summary>
+            {legacy}
+          </details>
+        </>
+      )}
+      {oauth && (
+        <>
+          <p className="mt-3 text-sm leading-6 text-ink-muted">
+            {oauth.hevy_username ? <>Signed in to Hevy as <strong className="text-ink">{oauth.hevy_username}</strong>. </> : null}
+            {reconnect
+              ? "Hevy needs you to approve Nakama again before it can read your workouts. Your saved details and report setting are kept."
+              : "Nakama can read your latest workouts when you ask for coaching."}
+          </p>
+          <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2">
+            {reconnect && (
+              <button type="button" onClick={onConnect} disabled={busy} className={`${primaryButton} sm:w-auto`}>
+                {busy ? "Opening Hevy..." : "Reconnect Hevy"}
+              </button>
+            )}
+            {!reconnect && (
+              <button type="button" onClick={onConnect} disabled={busy} className={linkButton}>
+                {busy ? "Opening Hevy..." : "Reconnect"}
+              </button>
+            )}
+            <button type="button" onClick={onDisconnect} disabled={busy} className={linkButton}>Disconnect Hevy</button>
+          </div>
+          <p className="mt-2 text-xs leading-5 text-ink-muted">
+            Disconnect removes the saved Hevy connection from Nakama. It does not delete your Hevy workouts.
+          </p>
+        </>
+      )}
+      <p aria-live="polite" className="empty:hidden">
+        {error && <span role="alert" className="mt-4 block text-sm text-red-700">{error}</span>}
+      </p>
     </section>
+  );
+}
+
+export function HevyConnectionForm({ connection, onChanged, oauthReturn = null }: {
+  connection: HevyConnection; onChanged: () => void; oauthReturn?: OAuthReturn | null;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const legacyConnected = connection.connected && connection.method !== "oauth";
+  if (legacyConnected) return <LegacyKeyConnection connection={connection} onChanged={onChanged} />;
+
+  async function connect() {
+    setBusy(true);
+    setError(null);
+    try {
+      // Reconnecting never disconnects first; the existing connection stays until Hevy approval completes.
+      window.location.assign(await startHevyOAuth());
+    } catch (caught) {
+      if (!(caught instanceof OAuthStartError)) throw caught;
+      setError(caught.message);
+      setBusy(false);
+    }
+  }
+
+  async function disconnect() {
+    if (!window.confirm("Disconnect Hevy? This removes the saved Hevy connection from Nakama. It does not delete your Hevy workouts.")) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/hevy", { method: "DELETE" });
+      await readApiResponse(response, z.object({ connection: connectionSchema }));
+      onChanged();
+    } catch (caught) {
+      if (!(caught instanceof Error)) throw caught;
+      setError(caught.message);
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <HevyConnectView
+      connection={connection} busy={busy} error={error} oauthReturn={oauthReturn}
+      onConnect={() => void connect()} onDisconnect={() => void disconnect()}
+      legacy={<LegacyKeyConnection connection={connection} onChanged={onChanged} embedded />}
+    />
   );
 }

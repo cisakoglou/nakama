@@ -83,11 +83,12 @@ export async function saveHevyConnection(userId: string, apiKey: string) {
   const encrypted_key = encryptHevyKey(userId, apiKey);
   const client = storage();
   await validateHevyKey(apiKey);
-  const { data, error } = await client.from("hevy_connections").upsert({
-    user_id: userId, encrypted_key, revision: randomUUID(), updated_at: new Date().toISOString(),
-  }).select("revision, updated_at").single();
+  const { data, error } = await client.rpc("save_hevy_api_key", {
+    p_user_id: userId, p_encrypted_key: encrypted_key, p_revision: randomUUID(),
+  });
   if (error) throw storageFailure(error.code);
-  return connectionSchema.parse({ connected: true, revision: data.revision, connected_at: data.updated_at });
+  if (!data) throw new HevyConnectionError(409, "Reconnect this account through Hevy instead of replacing it with an API key.");
+  return connectionSchema.parse(data);
 }
 
 export async function loadHevyConnection(userId: string) {
@@ -95,10 +96,11 @@ export async function loadHevyConnection(userId: string) {
     .select("encrypted_key, revision").eq("user_id", userId).maybeSingle();
   if (error) throw storageFailure(error.code);
   if (!data) throw new HevyConnectionError(409, "Connect your own Hevy account before talking with your Nakama.");
+  if (!data.encrypted_key) throw new HevyConnectionError(409, "This connection needs the OAuth-enabled coaching tools, which are not available yet.");
   return { apiKey: decryptHevyKey(userId, data.encrypted_key), revision: data.revision };
 }
 
 export async function deleteHevyConnection(userId: string) {
-  const { error } = await storage().from("hevy_connections").delete().eq("user_id", userId);
+  const { error } = await storage().rpc("disconnect_hevy", { p_user_id: userId });
   if (error) throw storageFailure(error.code);
 }

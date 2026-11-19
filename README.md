@@ -114,6 +114,8 @@ Set these values in `web/.env.local`:
 | `APP_ORIGIN` | Public app origin, e.g. `https://nakama-preview-preview.up.railway.app`; required behind Railway's proxy for origin checks and sign-in redirects. |
 | `SUPABASE_SECRET_KEY` | Server-only Supabase secret key for encrypted credential storage. |
 | `HEVY_CREDENTIAL_ENCRYPTION_KEY` | Server-only base64-encoded 32 random bytes; keep stable across deployments. |
+| `HEVY_OAUTH_CLIENT_ID` | Optional Hevy OAuth app ID; required for the OAuth backend routes. |
+| `HEVY_OAUTH_CLIENT_SECRET` | Optional, server-only Hevy OAuth app secret. Never expose it to browsers. |
 | `ANTHROPIC_API_KEY` | Server-only Claude provider key. |
 | `VAPID_PUBLIC_KEY` | Optional. Web Push public key for "report ready" notifications (sent to browsers). |
 | `VAPID_PRIVATE_KEY` | Optional, server-only. Web Push private key; keep stable across deployments. |
@@ -167,6 +169,16 @@ They do not contact Supabase, Hevy, or Anthropic.
    [`supabase/migrations/202611150001_push_subscriptions.sql`](supabase/migrations/202611150001_push_subscriptions.sql)
    once, before enabling report notifications. It adds server-only Web Push
    subscriptions, capped at the ten newest per account.
+   Then run
+   [`supabase/migrations/202611190001_hevy_oauth.sql`](supabase/migrations/202611190001_hevy_oauth.sql)
+   before deploying the OAuth backend. It preserves API-key connections and adds
+   server-only OAuth state, encrypted token storage and fenced refresh operations.
+   Key save/disconnect operations also use the new RPCs after this release.
+   Then run
+   [`supabase/migrations/202611190002_hevy_request_budget.sql`](supabase/migrations/202611190002_hevy_request_budget.sql)
+   before deploying the shared Hevy client. It adds cross-instance request pacing
+   and version-fenced handling of rejected OAuth access tokens. Both new
+   migrations must precede deployment of the combined OAuth backend.
 2. Add each approved email through the SQL Editor, replacing the example:
 
    ```sql
@@ -227,6 +239,98 @@ invitation status and ownership. Removing an invitation blocks future access
 even for an already-created account. Only the owner administers invitations;
 the browser cannot list or change them.
 
+### Hevy OAuth backend (#24)
+
+The backend foundation is separate from the existing key-based UI. Register
+`https://nakama-production-60d5.up.railway.app/api/hevy/oauth/callback`
+in Hevy, and `http://localhost:3002/api/hevy/oauth/callback` for local development.
+The callback is derived from the trusted `APP_ORIGIN`; there is no user-controlled
+return URL. Set the two server-only OAuth variables above. Do not use the
+Supabase `/auth/callback` or personal `/api/hevy/webhook` endpoint.
+
+Contract for the onboarding work in #20:
+
+- Authenticated same-origin `POST /api/hevy/oauth/start` returns
+  `{ "authorization_url": "https://hevy.com/oauth/authorize?..." }`.
+  Navigate the current browser to that URL. An HttpOnly, SameSite=Lax,
+  ten-minute browser-binding cookie is scoped to `/api/hevy/oauth`.
+- `GET /api/hevy/oauth/callback` checks the same signed-in, invited user
+  and atomically consumes hashed state bound to that browser. Success returns
+  `303` to `/?hevy_oauth=connected`. Failures currently return explicit
+  `{ "error": "...", "code": "..." }` JSON rather than a success-shaped redirect.
+  The cookie is cleared and responses prevent caching/referrer leakage.
+- Existing `GET /api/account` keeps the legacy connection shape. OAuth adds
+  `method: "oauth"`, `state: "active" | "reconnect_required"`, `hevy_user_id`
+  and `hevy_username`; no tokens are returned. `connected: true` means a saved
+  connection exists, not necessarily that authorization is still active.
+- Existing `DELETE /api/hevy` immediately deletes the local connection and all
+  pending OAuth attempts, including attempts started before a connection exists.
+  Provider-side revocation is not assumed to be available.
+
+`loadHevyCredentials(userId)` is server-only and works without a browser session.
+It returns a typed API key or a valid bearer token for the client integration in
+#19. Expiring tokens are refreshed under a database lease; a separate token
+version fences stale refresh responses without changing the logical connection
+revision used by report jobs. Replacement/disconnect and a newer authorization
+cannot be overwritten by an older callback/refresh.
+
+Hevy refresh tokens are single-use. If the process crashes or a request fails
+after a token might have been consumed, Nakama requires reconnection rather
+than replaying it. An explicit rate-limit/client-auth rejection can be retried
+later. If the token-pair database save fails, the attempt remains fenced; another
+caller may use a successfully committed pair, but must not retry a possibly
+spent token. OAuth storage and RPCs are unavailable to browser roles.
+
+The shared client in #19 enables OAuth reads and coaching tools, including
+processing already-queued report jobs. This does **not** enable the connection
+UI (#20), signed app-webhook ingestion (#22), or API-key migration (#21). Existing API-key
+connections remain unchanged and OAuth start returns `migration_required`
+for them until that migration exists. OAuth reauthorization only accepts the
+same provider account. Keep the optional app-webhook URL unset until #22 lands.
+Non-Pro eligibility, PKCE support, refresh-token lifetime and provider revocation
+still need verification in #25; do not change subscription claims yet.
+
+### Shared Hevy client and coaching tools (#19)
+
+`web/lib/hevy-client.ts` reloads the job/chat owner's credentials before each
+request, including after rate-limit waits. It sends `api-key` for existing
+connections and `Authorization: Bearer` for OAuth, never an access token as an
+API key. Token refresh uses the lifecycle above; a logical connection change
+stops further requests. HTTP 401 marks only that exact current OAuth token
+version reconnect-required; an older rejection cannot revoke a newer grant
+or interrupt a refresh already in flight. Permission/account-limit denials
+(403) are reported without deleting a usable connection.
+
+The client serves coaching, workout-report workout/history reads and longer-range
+chart requests. `web/lib/hevy-tools.ts` supplies the same twelve allowed tool
+names locally, with the three writes still requiring per-action AI SDK approval.
+The web app no longer starts a Hevy MCP subprocess. Canonical inputs use
+snake_case, including `routine`, `exercise_template_id` and `rep_range`.
+Exercise searches share a paginated catalog only within the current chat
+request; custom exercises are not cached across accounts.
+
+Offline contract tests compare the ten tools still exposed by the pinned
+`hevy-mcp` package against an in-memory server, including request payloads and
+results. The allowed count/template-list tools are implemented directly.
+One intentional correction normalizes Hevy's documented single-element
+`POST /workouts` response array into the workout result; the upstream adapter
+loses the workout fields for that response shape.
+
+The database reserves request starts 350 ms apart across all app processes
+sharing this database, conservatively below Hevy's documented 1,000 requests
+per five minutes per IP. Reservations more than five seconds ahead fail with
+429 rather than building an unbounded queue; unavailable scheduling fails
+closed. This budget covers shared-client calls, not other applications sharing
+the outbound IP or one-off connection-validation requests. Reads retry a 429
+at most twice, waiting one and two seconds and reserving each retry. Writes
+are never automatically retried, including after 429, network failures or
+unreadable responses; check Hevy before approving an uncertain write again.
+Requests have a fifteen-second network timeout and respect chat cancellation.
+
+Local contract/database tests do not establish live Hevy OAuth eligibility
+or a successful hosted authorization round trip. The optional app-webhook
+URL must still stay unset until #22 is deployed.
+
 ### Data saved in this version
 
 Supabase Auth stores account identity and sessions. `public.profiles` stores
@@ -266,10 +370,10 @@ still work without browser storage. The production prototype's browser-local
 chat is not automatically imported into an account.
 
 Coaching sends the conversation, preferences, and requested workout context
-to Anthropic. The Hevy key is passed only to Hevy for validation and to a
-request-isolated local `hevy-mcp` process for Hevy API calls, not to the model
-prompt or a hosted MCP service. The MCP package is pinned to `6.2.1` and its
-default-on third-party telemetry is explicitly disabled.
+to Anthropic. Hevy credentials are used only for server-side requests to Hevy,
+not sent to the model prompt, a hosted MCP service or a subprocess.
+The pinned `hevy-mcp` package is used for offline tool-contract comparisons,
+not the account web app's request transport.
 
 Disconnect deletes the saved credential and invalidates active coaching;
 it does not delete workouts or revoke the API key at Hevy. Users must revoke
@@ -303,8 +407,8 @@ in each account-app service, and set `APP_ORIGIN` to its exact public HTTPS
 origin. Do not derive this trusted origin from incoming forwarded-host headers.
 When both services use the same database, preserve the same
 `HEVY_CREDENTIAL_ENCRYPTION_KEY`; generating a new one breaks saved connections.
-Retain installed `node_modules` relative to the app's working directory: the
-app launches the pinned MCP CLI from that directory at runtime.
+Apply the OAuth and shared-request-budget migrations before deploying code
+that calls their RPCs. Do not treat preview as a separate database sandbox.
 
 Validate changes on preview before promoting them to production. The
 database migrations, active signup hook, provider configuration, and real
@@ -325,6 +429,10 @@ Never commit credentials or local environment files, or upload unrelated
 untracked files in deployment archives.
 
 ## Hevy connection decision (2026-10-18)
+
+This is the historical API-key decision. Hevy's new
+[developer portal](https://developers.hevy.com/authentication) documents OAuth;
+the backend foundation and remaining rollout boundaries are described above.
 
 **Continue development, but hold invitations to other users until the hosted
 integration requirements are clarified and hosted user isolation is verified.**
@@ -397,8 +505,10 @@ A worker inside the long-running Next.js server (started from
 saved and also re-checks the **database queue** every 30 seconds. That sweep
 only picks up already-received jobs (retries, missed wake-ups, or jobs left by
 a restart); it never polls Hevy for new workouts. For each job it loads that
-account's Hevy key, fetches the workout and up to 30 earlier workouts, and
-saves the report chat.
+account's current Hevy credentials, fetches the workout and full history for
+up to twenty distinct exercises (three concurrent history reads), and saves
+the report chat. Earlier sessions supply comparisons and all-time PR evidence;
+the shared client refreshes OAuth tokens when needed without a browser session.
 
 **Deployment prerequisite:** this requires a persistent Node.js server
 (`next start`, as on the current Railway service) with Railway's App
@@ -472,7 +582,8 @@ in `img/`; optimized source artwork remains in `web/public/brand/`.
 - `supabase/migrations/`: invitation hook, private profiles, and credential storage.
 - `web/app/api/hevy/route.ts`: validate, replace, or disconnect the user's key.
 - `web/lib/hevy-connection.ts`: server-only encryption and owner-scoped storage.
-- `web/lib/user-mcp.ts`: isolated local MCP process with telemetry disabled.
+- `web/lib/hevy-client.ts`, `web/lib/hevy-rate-limit.ts`: shared, owner-scoped OAuth/API-key transport and database-backed pacing.
+- `web/lib/hevy-tools.ts`: local coaching tool schemas, result adapters and write approvals.
 - `web/app/api/chat/route.ts`: authenticated private coaching and write approvals.
 - `web/app/api/conversations/`: owner-scoped chat history, drafts, rename, and deletion.
 - `web/lib/conversations.ts`, `web/lib/conversation-stream.ts`: versioned storage and response checkpoints.
