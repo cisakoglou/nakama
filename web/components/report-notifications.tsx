@@ -114,7 +114,8 @@ export function ReportNotifications() {
         )}
       </div>
       <p className="mt-3 text-sm leading-6 text-ink-muted">
-        Get a notification on this device when a new post-workout report is added to your chats.
+        Optional. Reports are created and added to your chats whether or not you turn this on. Notifications only alert
+        this device when a new one arrives.
       </p>
       {message[state] && <p className="mt-3 rounded-xl border border-line bg-canvas p-4 text-sm leading-6">{message[state]}</p>}
       {state === "off" && (

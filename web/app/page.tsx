@@ -8,9 +8,11 @@ import { SignInForm } from "@/components/sign-in-form";
 import { ProfileForm } from "@/components/profile-form";
 import { HevyConnectionForm } from "@/components/hevy-connection-form";
 import { WorkoutReportWebhook } from "@/components/workout-report-webhook";
+import { HevyReports } from "@/components/hevy-reports";
 import { ReportNotifications } from "@/components/report-notifications";
 import { ChatPanel } from "@/components/chat-panel";
 import { readApiResponse } from "@/lib/api-response";
+import { readOAuthReturn, withoutOAuthParams, type OAuthReturn } from "@/lib/hevy-connect-client";
 import { browserPushSubscription, releasePushSubscription } from "@/lib/push-client";
 import {
   accountSchema, EQUIPMENT_LABELS, EXPERIENCE_LABELS, GOAL_LABELS, type Account,
@@ -30,12 +32,23 @@ export default function Home() {
   const [signingOut, setSigningOut] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [oauthReturn, setOauthReturn] = useState<OAuthReturn | null>(null);
   const activeUserId = screen.kind === "account" ? screen.account.user.id : null;
+
+  // Coming back from Hevy: read the hint once, clean the URL, and show the settings screen with the real reloaded state.
+  useEffect(() => {
+    const result = readOAuthReturn(window.location.search);
+    if (!result) return;
+    window.history.replaceState(null, "", withoutOAuthParams(window.location.href));
+    setOauthReturn(result);
+    setShowSettings(true);
+  }, []);
 
   function reloadAccount() {
     setScreen({ kind: "loading" });
     setActionError(null);
     setShowSettings(false);
+    setOauthReturn(null);
     setReload((value) => value + 1);
   }
 
@@ -163,13 +176,18 @@ export default function Home() {
                     className="mt-5 rounded-xl bg-brand px-4 py-3 text-sm font-semibold hover:bg-brand-hover"
                   >Edit preferences</button>
                   {screen.account.connection.connected && <button
-                    onClick={() => setShowSettings(false)}
+                    onClick={() => { setShowSettings(false); setOauthReturn(null); }}
                     className="ml-4 mt-5 min-h-11 text-sm underline underline-offset-4"
                   >Back to your Nakama</button>}
-                  <HevyConnectionForm connection={screen.account.connection} onChanged={reloadAccount} />
+                  <HevyConnectionForm connection={screen.account.connection} onChanged={reloadAccount} oauthReturn={oauthReturn} />
                   {screen.account.connection.connected && (
                     <>
-                      <WorkoutReportWebhook key={screen.account.connection.revision} />
+                      {screen.account.connection.method === "oauth"
+                        ? <HevyReports
+                          key={screen.account.connection.revision}
+                          reconnectRequired={screen.account.connection.state === "reconnect_required"}
+                        />
+                        : <WorkoutReportWebhook key={screen.account.connection.revision} />}
                       <ReportNotifications />
                     </>
                   )}

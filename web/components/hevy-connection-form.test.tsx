@@ -1,12 +1,12 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { HevyConnectionForm } from "./hevy-connection-form";
+import { HevyConnectionForm, LegacyKeyConnection } from "./hevy-connection-form";
 
 describe("guided Hevy connection", () => {
   it("explains browser-only setup and links directly to Hevy before asking for a key", () => {
     const html = renderToStaticMarkup(
-      <HevyConnectionForm connection={{ connected: false }} onChanged={() => {}} />,
+      <LegacyKeyConnection connection={{ connected: false }} onChanged={() => {}} />,
     );
 
     expect(html).toContain("Hevy Pro is required.");
