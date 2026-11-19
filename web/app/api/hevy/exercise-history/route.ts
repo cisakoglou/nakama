@@ -1,42 +1,18 @@
 import type { NextRequest } from "next/server";
 import { z } from "zod";
 import { requireBetaUser } from "@/lib/auth";
-import { HevyConnectionError, loadHevyConnection } from "@/lib/hevy-connection";
+import { HevyConnectionError } from "@/lib/hevy-connection";
+import { HevyOAuthError } from "@/lib/hevy-oauth";
+import { createHevyClient, HevyRequestError, type HevyClient } from "@/lib/hevy-client";
 import {
   RANGES, addDays, buildRangeChart, hevyWindow, isRealDate, rangeStart, sessionsFromHistory, templateIdSchema,
 } from "@/lib/exercise-series";
-
-const HEVY_API = "https://api.hevyapp.com/v1";
 
 const paramsSchema = z.object({
   template: templateIdSchema,
   range: z.enum(RANGES),
   end: z.string().refine(isRealDate),
 }).strict();
-
-class HevyUnavailable extends Error {
-  constructor(public readonly status: number | null) { super(`Hevy request failed (${status ?? "network"})`); }
-}
-
-async function hevyGet(apiKey: string, path: string, params: Record<string, string> = {}) {
-  const url = new URL(`${HEVY_API}${path}`);
-  for (const [name, value] of Object.entries(params)) url.searchParams.set(name, value);
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      headers: { "api-key": apiKey, accept: "application/json" },
-      cache: "no-store", signal: AbortSignal.timeout(15_000),
-    });
-  } catch (error) {
-    if (!(error instanceof TypeError) && !(error instanceof DOMException)) throw error;
-    throw new HevyUnavailable(null);
-  }
-  if (!response.ok) {
-    await response.body?.cancel();
-    throw new HevyUnavailable(response.status);
-  }
-  return response.json() as Promise<unknown>;
-}
 
 const historySchema = z.object({ exercise_history: z.array(z.unknown()) });
 /** The renderer keeps the report's own title, so no extra Hevy request is spent on the template name. */
@@ -65,30 +41,33 @@ export async function GET(request: NextRequest) {
   }
   const units = profile?.units === "lb" ? "lb" : "kg";
 
-  let apiKey: string;
+  let hevy: HevyClient;
   try {
-    ({ apiKey } = await loadHevyConnection(access.user.id));
+    hevy = await createHevyClient(access.user.id, request.signal);
   } catch (error) {
     if (!(error instanceof HevyConnectionError)) throw error;
-    return error.status === 409 ? fail("Connect your Hevy account to see longer ranges.", 404) : fail(error.message, error.status);
+    return error.status === 409 && !(error instanceof HevyOAuthError)
+      ? fail("Connect your Hevy account to see longer ranges.", 404) : fail(error.message, error.status);
   }
 
   const start = rangeStart(end, range);
   let entries: unknown[];
   try {
-    const history = await hevyGet(apiKey, `/exercise_history/${encodeURIComponent(template)}`, hevyWindow(start, end))
+    const history = await hevy.request(`/exercise_history/${encodeURIComponent(template)}`, { query: hevyWindow(start, end) })
       .catch((error) => {
         // Hevy answers 404 when an exercise has no history.
-        if (error instanceof HevyUnavailable && error.status === 404) return { exercise_history: [] };
+        if (error instanceof HevyRequestError && error.providerStatus === 404) return { exercise_history: [] };
         throw error;
       });
     const parsed = historySchema.safeParse(history);
-    if (!parsed.success) throw new HevyUnavailable(200);
+    if (!parsed.success) throw new HevyRequestError(200);
     entries = parsed.data.exercise_history;
   } catch (error) {
-    if (!(error instanceof HevyUnavailable)) throw error;
-    console.error("Hevy exercise history request failed", { status: error.status });
-    return fail("Hevy is temporarily unavailable. Please try again.", 502);
+    if (!(error instanceof HevyConnectionError)) throw error;
+    console.error("Hevy exercise history request failed", {
+      status: error instanceof HevyRequestError ? error.providerStatus : error.status,
+    });
+    return fail(error.message, error.status);
   }
 
   const result = buildRangeChart({

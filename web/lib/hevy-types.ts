@@ -6,6 +6,10 @@ export const connectionSchema = z.discriminatedUnion("connected", [
     connected: z.literal(true),
     revision: z.string().uuid(),
     connected_at: z.string().datetime({ offset: true }),
+    method: z.enum(["api_key", "oauth"]).optional(),
+    state: z.enum(["active", "reconnect_required"]).optional(),
+    hevy_user_id: z.string().uuid().optional(),
+    hevy_username: z.string().max(100).optional(),
   }),
 ]);
 

@@ -25,10 +25,10 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/supabase/server", () => ({ createRequestClient: mocks.createRequestClient }));
 vi.mock("@/lib/mcp", () => ({ getMcp: mocks.getMcp }));
 vi.mock("server-only", () => ({}));
-vi.mock("@/lib/user-mcp", () => ({ createUserMcp: mocks.getMcp }));
-vi.mock("@/lib/hevy-connection", async (original) => ({
-  ...await original<typeof import("@/lib/hevy-connection")>(),
-  loadHevyConnection: mocks.loadConnection,
+vi.mock("@/lib/hevy-client", () => ({ createHevyClient: mocks.getMcp }));
+vi.mock("@/lib/hevy-oauth", async (original) => ({
+  ...await original<typeof import("@/lib/hevy-oauth")>(),
+  loadHevyCredentials: mocks.loadConnection,
 }));
 vi.mock("ai", () => ({ streamText: mocks.streamText }));
 

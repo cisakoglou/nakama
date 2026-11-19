@@ -7,6 +7,7 @@ import {
 const mocks = vi.hoisted(() => ({
   admin: vi.fn(), from: vi.fn(), upsert: vi.fn(), select: vi.fn(), eq: vi.fn(),
   single: vi.fn(), maybeSingle: vi.fn(), remove: vi.fn(), fetch: vi.fn(),
+  rpc: vi.fn(),
 }));
 vi.mock("server-only", () => ({}));
 vi.mock("@supabase/supabase-js", () => ({ createClient: mocks.admin }));
@@ -25,11 +26,14 @@ beforeEach(() => {
   vi.stubEnv("HEVY_CREDENTIAL_ENCRYPTION_KEY", Buffer.alloc(32, 7).toString("base64"));
   vi.stubEnv("HEVY_API_KEY", "legacy-owner-key-never-use");
   vi.spyOn(console, "error").mockImplementation(() => {});
-  mocks.admin.mockReturnValue({ from: mocks.from });
+  mocks.admin.mockReturnValue({ from: mocks.from, rpc: mocks.rpc });
   mocks.from.mockReturnValue(query);
   for (const fn of [mocks.upsert, mocks.select, mocks.remove]) fn.mockReturnValue(query);
   mocks.eq.mockResolvedValue({ error: null });
   mocks.single.mockResolvedValue({ data: { revision: one, updated_at: "2026-10-18T00:00:00Z" }, error: null });
+  mocks.rpc.mockResolvedValue({
+    data: { connected: true, revision: one, connected_at: "2026-10-18T00:00:00Z" }, error: null,
+  });
   mocks.fetch.mockResolvedValue(new Response("{}", { status: 200 }));
   vi.stubGlobal("fetch", mocks.fetch);
 });
@@ -59,9 +63,10 @@ describe("private Hevy credentials", () => {
     expect(mocks.fetch).toHaveBeenCalledWith("https://api.hevyapp.com/v1/user/info", expect.objectContaining({
       headers: { "api-key": "personal-api-key" },
     }));
-    const stored = mocks.upsert.mock.calls[0][0];
-    expect(stored.user_id).toBe(one);
-    expect(decryptHevyKey(one, stored.encrypted_key)).toBe("personal-api-key");
+    const [operation, stored] = mocks.rpc.mock.calls[0];
+    expect(operation).toBe("save_hevy_api_key");
+    expect(stored.p_user_id).toBe(one);
+    expect(decryptHevyKey(one, stored.p_encrypted_key)).toBe("personal-api-key");
     expect(result).toEqual({ connected: true, revision: one, connected_at: "2026-10-18T00:00:00Z" });
     expect(JSON.stringify(result)).not.toContain("personal-api-key");
     expect(mocks.admin.mock.calls[0][1]).toBe("sb_secret_server_only");
@@ -71,6 +76,7 @@ describe("private Hevy credentials", () => {
     mocks.fetch.mockResolvedValue(new Response("upstream error", { status }));
     await expect(saveHevyConnection(one, "bad-key")).rejects.toThrow(HevyConnectionError);
     expect(mocks.upsert).not.toHaveBeenCalled();
+    expect(mocks.rpc).not.toHaveBeenCalled();
   });
 
   it("never falls back to the configured owner's key", async () => {
@@ -91,8 +97,18 @@ describe("private Hevy credentials", () => {
 
   it("removes only the requested owner's stored key", async () => {
     await deleteHevyConnection(two);
-    expect(mocks.remove).toHaveBeenCalled();
-    expect(mocks.eq).toHaveBeenCalledWith("user_id", two);
+    expect(mocks.rpc).toHaveBeenCalledWith("disconnect_hevy", { p_user_id: two });
+  });
+
+  it("does not replace an OAuth connection through the old API-key endpoint", async () => {
+    mocks.rpc.mockResolvedValue({ data: null, error: null });
+    await expect(saveHevyConnection(one, "personal-api-key")).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("never passes an OAuth access token to an API-key-only consumer", async () => {
+    mocks.eq.mockReturnValue(query);
+    mocks.maybeSingle.mockResolvedValue({ data: { encrypted_key: null, revision: one }, error: null });
+    await expect(loadHevyConnection(one)).rejects.toMatchObject({ status: 409 });
   });
 
   it("fails closed without server-side encryption configuration", async () => {
