@@ -22,9 +22,11 @@ function lastReportLine(report: LastReport, now: number) {
 }
 
 /** Report controls for OAuth connections. All state comes from GET/PUT /api/hevy/reports. */
-export function HevyReportsView({ state, unavailable, busy, error, reconnectRequired, now = Date.now(), onToggle, onRetry }: {
+export function HevyReportsView({ state, unavailable, unconfirmed = false, busy, error, reconnectRequired, now = Date.now(), onToggle, onRetry }: {
   state: ReportsState | null;
   unavailable: boolean;
+  /** A save failed and the server value could not be re-read: the switch shows a possibly stale value. */
+  unconfirmed?: boolean;
   busy: boolean;
   error: string | null;
   reconnectRequired: boolean;
@@ -58,7 +60,7 @@ export function HevyReportsView({ state, unavailable, busy, error, reconnectRequ
             <span id="hevy-reports-label" className="text-sm font-medium">Automatic workout reports</span>
             <button
               type="button" role="switch" aria-checked={state.enabled} aria-labelledby="hevy-reports-label"
-              disabled={busy} onClick={() => onToggle(!state.enabled)}
+              disabled={busy || unconfirmed} onClick={() => onToggle(!state.enabled)}
               className={`relative inline-flex h-11 w-16 shrink-0 items-center rounded-full border border-line px-1 focus:outline-none focus:ring-2 focus:ring-brand/40 disabled:opacity-50 ${state.enabled ? "bg-brand" : "bg-canvas"}`}
             >
               <span aria-hidden="true" className={`h-8 w-8 rounded-full bg-surface shadow transition-transform ${state.enabled ? "translate-x-6" : ""}`} />
@@ -80,6 +82,13 @@ export function HevyReportsView({ state, unavailable, busy, error, reconnectRequ
           )}
         </>
       )}
+      {unconfirmed && (
+        <div className="mt-3 rounded-xl border border-line bg-canvas p-4 text-sm leading-6">
+          <p role="alert">We couldn&apos;t confirm whether your change was saved.</p>
+          <button type="button" onClick={onRetry} disabled={busy}
+            className="mt-2 min-h-11 text-sm underline underline-offset-4 disabled:opacity-50">Check again</button>
+        </div>
+      )}
       <p aria-live="polite" className="empty:hidden">
         {error && <span role="alert" className="mt-3 block text-sm text-red-700">{error}</span>}
       </p>
@@ -93,6 +102,7 @@ export function HevyReportsView({ state, unavailable, busy, error, reconnectRequ
 export function HevyReports({ reconnectRequired }: { reconnectRequired: boolean }) {
   const [state, setState] = useState<ReportsState | null>(null);
   const [unavailable, setUnavailable] = useState(false);
+  const [unconfirmed, setUnconfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -100,6 +110,7 @@ export function HevyReports({ reconnectRequired }: { reconnectRequired: boolean 
     try {
       setState(await fetchReports());
       setUnavailable(false);
+      setUnconfirmed(false);
     } catch {
       setUnavailable(true);
     }
@@ -107,12 +118,25 @@ export function HevyReports({ reconnectRequired }: { reconnectRequired: boolean 
   useEffect(() => { void load(); }, [load]);
 
   async function toggle(enabled: boolean) {
+    const before = state?.enabled;
     setBusy(true);
     setError(null);
     try {
       setState(await saveReportsEnabled(enabled));
+      setUnconfirmed(false);
     } catch {
-      setError("Could not save that change. Your report setting is unchanged.");
+      // The server may have committed even though the response failed: always re-read the real value.
+      try {
+        const actual = await fetchReports();
+        setState(actual);
+        setUnavailable(false);
+        setUnconfirmed(false);
+        setError(actual.enabled === enabled ? null
+          : actual.enabled === before ? "Could not save that change. Your report setting is unchanged."
+            : "Your report setting was changed elsewhere. It is shown as it is now.");
+      } catch {
+        setUnconfirmed(true);
+      }
     } finally { setBusy(false); }
   }
 
@@ -123,7 +147,7 @@ export function HevyReports({ reconnectRequired }: { reconnectRequired: boolean 
 
   return (
     <HevyReportsView
-      state={state} unavailable={unavailable} busy={busy} error={error} reconnectRequired={reconnectRequired}
+      state={state} unavailable={unavailable} unconfirmed={unconfirmed} busy={busy} error={error} reconnectRequired={reconnectRequired}
       onToggle={(enabled) => void toggle(enabled)} onRetry={() => void retry()}
     />
   );
