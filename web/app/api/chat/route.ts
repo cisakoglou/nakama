@@ -1,14 +1,16 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
-import { convertToModelMessages, jsonSchema, stepCountIs, streamText, tool, validateUIMessages } from "ai";
+import { convertToModelMessages, stepCountIs, streamText, validateUIMessages } from "ai";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { requireBetaUser } from "@/lib/auth";
-import { loadHevyConnection, HevyConnectionError } from "@/lib/hevy-connection";
+import { HevyConnectionError } from "@/lib/hevy-connection";
+import { loadHevyCredentials } from "@/lib/hevy-oauth";
+import { createHevyClient } from "@/lib/hevy-client";
+import { createHevyTools } from "@/lib/hevy-tools";
 import { connectionSchema } from "@/lib/hevy-types";
 import { profileSchema } from "@/lib/profile";
 import { coachingPrompt } from "@/lib/coaching";
-import { createUserMcp } from "@/lib/user-mcp";
 import { registerChat } from "@/lib/chat-lifecycle";
 import { getAppOrigin } from "@/lib/app-origin";
 import { ConversationError, conversationStore } from "@/lib/conversations";
@@ -18,12 +20,6 @@ import { conversationWriter } from "@/lib/conversation-stream";
 export const maxDuration = 120;
 export const runtime = "nodejs";
 
-const allowedTools = new Set([
-  "get-workouts", "get-workout", "get-workout-count", "search-exercise-templates",
-  "get-exercise-templates", "get-exercise-template", "get-exercise-history",
-  "get-routines", "get-routine", "create-routine", "update-routine", "create-workout",
-]);
-const writes = new Set(["create-routine", "update-routine", "create-workout"]);
 const inputSchema = z.object({
   conversationId: z.string().uuid(),
   revision: z.number().int().nonnegative(),
@@ -70,46 +66,27 @@ export async function POST(request: NextRequest) {
   if (!preferences.success) return access.session.json({ error: "Complete your training preferences first." }, 409);
 
   let release = () => {};
-  let closeMcp = async () => {};
   let history: ReturnType<typeof conversationWriter> | undefined;
   try {
-    const connection = await loadHevyConnection(access.user.id);
+    const connection = await loadHevyCredentials(access.user.id);
     const store = conversationStore(access.session.client, access.user.id);
     const conversation = await store.load(parsed.data.conversationId);
     const active = registerChat(access.user.id);
     release = active.release;
     const signal = AbortSignal.any([request.signal, active.controller.signal, AbortSignal.timeout(120_000)]);
-    const mcp = await createUserMcp(connection.apiKey, signal);
-    closeMcp = mcp.close;
-    let closing: Promise<void> | undefined;
-    function close() {
-      return closing ??= (async () => {
-        try { await mcp.close(); } finally { active.release(); }
-      })();
-    }
-    closeMcp = close;
-    const tools = Object.fromEntries(mcp.tools.filter((entry) => allowedTools.has(entry.name)).map((entry) => [
-      entry.name,
-      tool<unknown, unknown>({
-        description: entry.description ?? entry.name,
-        inputSchema: jsonSchema<unknown>(entry.inputSchema),
-        needsApproval: writes.has(entry.name),
-        execute: async (args) => {
-          signal.throwIfAborted();
-          const status = await access.session.client.rpc("hevy_connection_status");
-          const current = connectionSchema.safeParse(status.data);
-          if (status.error || !current.success || !current.data.connected || current.data.revision !== connection.revision) {
-            throw new HevyConnectionError(409, "Your Hevy connection changed. Reconnect or start a new chat.");
-          }
-          const result = await mcp.client.callTool({
-            name: entry.name, arguments: z.record(z.unknown()).parse(args),
-          }, undefined, { signal });
-          if (result.isError) throw new HevyConnectionError(502, "A Hevy operation failed. Check your connection; do not blindly retry writes.");
-          const content = z.array(z.object({ type: z.string(), text: z.string().optional() })).parse(result.content);
-          return content.filter((part) => part.type === "text").map((part) => part.text ?? "").join("\n");
-        },
-      }),
-    ]));
+    const hevy = await createHevyClient(access.user.id, signal);
+    const close = async () => { active.release(); };
+    const tools = createHevyTools(hevy, async () => {
+      signal.throwIfAborted();
+      const status = await access.session.client.rpc("hevy_connection_status");
+      const current = connectionSchema.safeParse(status.data);
+      if (status.error || !current.success || !current.data.connected || current.data.revision !== connection.revision) {
+        throw new HevyConnectionError(409, "Your Hevy connection changed. Reconnect or start a new chat.");
+      }
+      if (current.data.state === "reconnect_required") {
+        throw new HevyConnectionError(409, "Reconnect Hevy in settings before continuing.");
+      }
+    });
     let messages;
     try {
       messages = await validateUIMessages({ messages: parsed.data.messages, tools });
@@ -146,7 +123,8 @@ export async function POST(request: NextRequest) {
       onFinish: async ({ messages: finishedMessages, isAborted }) => {
         await writer.finish(finishedMessages, failed || isAborted || signal.aborted);
       },
-      onError: () => "Your Nakama or chat saving stopped. Reopen this chat and check Hevy before continuing; do not repeat an uncertain write.",
+      onError: error => error instanceof HevyConnectionError ? error.message
+        : "Your Nakama or chat saving stopped. Reopen this chat and check Hevy before continuing; do not repeat an uncertain write.",
     });
     if (!response.body) { await close(); throw new Error("Coaching stream body is missing"); }
     const reader = response.body.getReader();
@@ -177,7 +155,7 @@ export async function POST(request: NextRequest) {
     return access.session.respond(new Response(stream, { headers }));
   } catch (error) {
     try { await history?.finish(undefined, true); }
-    finally { await closeMcp(); release(); }
+    finally { release(); }
     if (!(error instanceof HevyConnectionError) && !(error instanceof ConversationError)) throw error;
     return access.session.json({ error: error.message }, error.status);
   }

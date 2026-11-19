@@ -6,10 +6,11 @@ import { GET } from "./route";
 const mocks = vi.hoisted(() => ({ auth: vi.fn(), load: vi.fn(), units: vi.fn() }));
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/auth", () => ({ requireBetaUser: mocks.auth }));
-vi.mock("@/lib/hevy-connection", async (original) => ({
-  ...await original<typeof import("@/lib/hevy-connection")>(),
-  loadHevyConnection: mocks.load,
+vi.mock("@/lib/hevy-oauth", async (original) => ({
+  ...await original<typeof import("@/lib/hevy-oauth")>(),
+  loadHevyCredentials: mocks.load,
 }));
+vi.mock("@/lib/hevy-rate-limit", () => ({ waitForHevyRequest: vi.fn().mockResolvedValue(undefined) }));
 
 const owner = "00000000-0000-4000-8000-000000000001";
 const entry = (workout: string, start: string, weight: number, reps: number, type = "normal") => ({
@@ -43,7 +44,7 @@ beforeEach(() => {
     ok: true, user: { id: owner, email: "one@example.test" },
     session: { client: { from: () => query }, json: (body: unknown, status = 200) => NextResponse.json(body, { status }) },
   });
-  mocks.load.mockResolvedValue({ apiKey: "personal-key", revision: "r1" });
+  mocks.load.mockResolvedValue({ method: "api_key", apiKey: "personal-key", revision: "r1" });
   fetchMock.mockClear();
   vi.stubGlobal("fetch", fetchMock);
 });
@@ -102,6 +103,16 @@ it("returns per-session points for 3m in the user's units", async () => {
   expect(body.chart.series[1]).toEqual({ key: "max_weight", label: "Max weight", unit: "lb", points: [{ date: "2026-11-18", value: 132.3 }] });
 });
 
+it("uses OAuth without changing chart data or sending an API-key header", async () => {
+  mocks.load.mockResolvedValue({ method: "oauth", accessToken: "private-token", tokenVersion: 1, revision: "r1" });
+  const response = await GET(request("template=BENCH_1&range=9m&end=2026-11-18"));
+  expect(response.status).toBe(200);
+  expect(rangeResponseSchema.parse(await response.json()).chart).toMatchObject({ exercise_template_id: "BENCH_1" });
+  const headers = new Headers(fetchMock.mock.calls[0][1]?.headers);
+  expect(headers.get("Authorization")).toBe("Bearer private-token");
+  expect(headers.has("api-key")).toBe(false);
+});
+
 it("answers 404 without a Hevy connection", async () => {
   const { HevyConnectionError } = await import("@/lib/hevy-connection");
   mocks.load.mockRejectedValue(new HevyConnectionError(409, "Connect your own Hevy account before talking with your Nakama."));
@@ -109,11 +120,11 @@ it("answers 404 without a Hevy connection", async () => {
   expect(fetchMock).not.toHaveBeenCalled();
 });
 
-it.each([401, 429, 500])("answers a generic 502 when Hevy fails (%i)", async (status) => {
+it.each([[401, 409], [403, 403], [429, 429], [500, 502]])("surfaces Hevy authentication, permissions, rate-limit and availability failures (%i)", async (status, expected) => {
   hevyStatus = status;
   const response = await GET(request("template=BENCH_1&range=9m&end=2026-11-18"));
-  expect(response.status).toBe(502);
-  expect(await response.json()).toEqual({ error: "Hevy is temporarily unavailable. Please try again." });
+  expect(response.status).toBe(expected);
+  expect(await response.json()).toEqual({ error: expect.stringMatching(/Hevy/) });
 });
 
 it("answers 404 when the exercise has no sessions in range", async () => {
