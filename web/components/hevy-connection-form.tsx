@@ -196,8 +196,8 @@ const primaryButton = "min-h-11 w-full rounded-xl bg-brand px-4 py-3 text-sm fon
 const linkButton = "min-h-11 text-sm underline underline-offset-4 focus:outline-none focus:ring-2 focus:ring-brand/40 disabled:opacity-50";
 
 /** Result of coming back from Hevy. The query parameter is a hint; `connection` is the real, reloaded state. */
-export function OAuthReturnNotice({ result, connection, busy, onRetry }: {
-  result: OAuthReturn; connection: HevyConnection; busy: boolean; onRetry: () => void;
+export function OAuthReturnNotice({ result, connection, busy = false, onRetry }: {
+  result: OAuthReturn; connection: HevyConnection; busy?: boolean; onRetry?: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => { ref.current?.focus(); }, []);
@@ -214,7 +214,7 @@ export function OAuthReturnNotice({ result, connection, busy, onRetry }: {
   return (
     <div ref={ref} tabIndex={-1} role="alert" className="mt-4 rounded-xl border border-line bg-canvas p-4 text-sm leading-6 focus:outline-none focus:ring-2 focus:ring-brand/40">
       <p>{oauthErrorMessage(result.code)}</p>
-      {canRetryOAuth(result.code) && (
+      {onRetry && canRetryOAuth(result.code) && (
         <button type="button" onClick={onRetry} disabled={busy} className={`${linkButton} mt-1`}>
           {busy ? "Opening Hevy..." : "Try again"}
         </button>
@@ -284,7 +284,7 @@ export function HevyConnectView({ connection, busy, error, oauthReturn, onConnec
             <button type="button" onClick={onDisconnect} disabled={busy} className={linkButton}>Disconnect Hevy</button>
           </div>
           <p className="mt-2 text-xs leading-5 text-ink-muted">
-            Disconnect removes Nakama&apos;s access, not your Hevy workouts.
+            Disconnect removes the saved Hevy connection from Nakama. It does not delete your Hevy workouts.
           </p>
         </>
       )}
@@ -317,7 +317,7 @@ export function HevyConnectionForm({ connection, onChanged, oauthReturn = null }
   }
 
   async function disconnect() {
-    if (!window.confirm("Disconnect Hevy and remove Nakama's access? This does not delete your Hevy workouts.")) return;
+    if (!window.confirm("Disconnect Hevy? This removes the saved Hevy connection from Nakama. It does not delete your Hevy workouts.")) return;
     setBusy(true);
     setError(null);
     try {

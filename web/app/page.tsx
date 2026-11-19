@@ -6,7 +6,7 @@ import { BrandLockup } from "@/components/brand-lockup";
 import { TrainingLoader } from "@/components/training-loader";
 import { SignInForm } from "@/components/sign-in-form";
 import { ProfileForm } from "@/components/profile-form";
-import { HevyConnectionForm } from "@/components/hevy-connection-form";
+import { HevyConnectionForm, OAuthReturnNotice } from "@/components/hevy-connection-form";
 import { WorkoutReportWebhook } from "@/components/workout-report-webhook";
 import { HevyReports } from "@/components/hevy-reports";
 import { ReportNotifications } from "@/components/report-notifications";
@@ -137,7 +137,10 @@ export default function Home() {
             <Link href="/features" className="mt-5 inline-flex min-h-11 items-center text-sm font-semibold text-brand underline underline-offset-4">Explore Nakama</Link>
             <div className="mt-5 border-t border-line pt-4"><TrainingLoader label="Checking your sign-in" /></div>
           </>}
-          {screen.kind === "sign-in" && <SignInForm message={screen.message} onRefresh={reloadAccount} />}
+          {screen.kind === "sign-in" && <>
+            {oauthReturn && <OAuthReturnNotice result={oauthReturn} connection={{ connected: false }} />}
+            <SignInForm message={screen.message} onRefresh={reloadAccount} />
+          </>}
           {screen.kind === "error" && (
             <>
               <h1 className="text-2xl font-semibold">Unable to open Nakama</h1>

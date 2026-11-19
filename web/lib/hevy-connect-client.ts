@@ -5,7 +5,7 @@ import { z } from "zod";
 export const OAUTH_ERROR_CODES = [
   "access_denied", "invalid_state", "account_in_use", "account_mismatch", "connection_changed",
   "migration_required", "missing_scope", "not_eligible", "provider_unavailable", "configuration_unavailable",
-  "reconnect_required", "refresh_busy",
+  "reconnect_required", "refresh_busy", "signed_out",
 ] as const;
 export type OAuthErrorCode = (typeof OAUTH_ERROR_CODES)[number] | "unknown";
 
@@ -22,6 +22,7 @@ const MESSAGES: Record<OAuthErrorCode, string> = {
   configuration_unavailable: "Connecting with Hevy is not available on this Nakama server right now. Nothing changed.",
   reconnect_required: "Your Hevy approval is no longer valid. Reconnect to continue.",
   refresh_busy: "Hevy is busy refreshing your connection. Try again in a moment.",
+  signed_out: "You came back from Hevy in a browser where you are not signed in to Nakama. Nothing changed. Open Nakama where you are signed in (on iPhone, the home-screen app) and connect from there.",
   unknown: "Something went wrong while connecting to Hevy. Nothing changed. Try again.",
 };
 

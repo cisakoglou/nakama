@@ -38,8 +38,9 @@ export function HevyReportsView({ state, unavailable, busy, error, reconnectRequ
     <section aria-labelledby="hevy-reports-heading" className="mt-6 rounded-2xl border border-line p-5">
       <h2 id="hevy-reports-heading" className="text-lg font-semibold">Post-workout reports</h2>
       <p className="mt-3 text-sm leading-6 text-ink-muted">
-        When you save a new workout in Hevy, Nakama adds a report to your chats comparing it with your recent similar
-        workouts. Reports are created whether or not you turn on notifications.
+        When you save a new workout in Hevy, Nakama adds a report to your chats comparing each exercise with your
+        previous sessions of it (last session, 3-month average and personal records). Reports are created whether or
+        not you turn on notifications.
       </p>
       {reconnectRequired && (
         <p className="mt-3 text-sm leading-6 text-ink-muted">Reports pause until you reconnect Hevy.</p>

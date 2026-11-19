@@ -44,6 +44,7 @@ describe("OAuth return parameters", () => {
   it("reads connected and error returns; query is only a hint", () => {
     expect(readOAuthReturn("?hevy_oauth=connected")).toEqual({ kind: "connected" });
     expect(readOAuthReturn("?hevy_oauth=error&code=access_denied")).toEqual({ kind: "error", code: "access_denied" });
+    expect(readOAuthReturn("?hevy_oauth=error&code=signed_out")).toEqual({ kind: "error", code: "signed_out" });
     expect(readOAuthReturn("?hevy_oauth=error&code=whatever")).toEqual({ kind: "error", code: "unknown" });
     expect(readOAuthReturn("?hevy_oauth=error")).toEqual({ kind: "error", code: "unknown" });
     expect(readOAuthReturn("?hevy_oauth=other")).toBeNull();
@@ -53,7 +54,7 @@ describe("OAuth return parameters", () => {
   it("has a message for every code and offers retry except where it cannot help", () => {
     for (const code of ["access_denied", "invalid_state", "account_in_use", "account_mismatch", "connection_changed",
       "migration_required", "missing_scope", "not_eligible", "provider_unavailable", "configuration_unavailable",
-      "reconnect_required", "refresh_busy", "unknown"] as const) {
+      "reconnect_required", "refresh_busy", "signed_out", "unknown"] as const) {
       expect(oauthErrorMessage(oauthErrorCode(code)).length).toBeGreaterThan(10);
     }
     expect(oauthErrorMessage("access_denied")).toContain("nothing changed");

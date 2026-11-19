@@ -1,7 +1,7 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { HevyConnectionForm, HevyConnectView } from "./hevy-connection-form";
+import { HevyConnectionForm, HevyConnectView, OAuthReturnNotice } from "./hevy-connection-form";
 import { HevyReportsView } from "./hevy-reports";
 import { WebhookSetupView } from "./workout-report-webhook";
 import type { HevyConnection } from "@/lib/hevy-types";
@@ -78,6 +78,25 @@ describe("OAuth return states", () => {
     const migration = view(disconnected, { oauthReturn: { kind: "error", code: "migration_required" } });
     expect(migration).toContain("keeps working");
     expect(migration).not.toContain("Try again");
+  });
+});
+
+describe("signed_out return", () => {
+  it("explains the browser/session mismatch and allows retry when signed in", () => {
+    const html = view(oauth(), { oauthReturn: { kind: "error", code: "signed_out" } });
+    expect(html).toContain("not signed in to Nakama");
+    expect(html).toContain("home-screen app");
+    expect(html).toContain("Nothing changed");
+    expect(html).toContain("Try again");
+  });
+
+  it("is shown on the sign-in screen without a retry button (nobody is signed in there)", () => {
+    const html = renderToStaticMarkup(
+      <OAuthReturnNotice result={{ kind: "error", code: "signed_out" }} connection={{ connected: false }} />,
+    );
+    expect(html).toContain('role="alert"');
+    expect(html).toContain("home-screen app");
+    expect(html).not.toContain("Try again");
   });
 });
 
