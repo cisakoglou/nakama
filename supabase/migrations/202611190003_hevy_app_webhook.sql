@@ -87,12 +87,14 @@ returns jsonb language sql stable security definer set search_path = '' as $$
   ) current_connection;
 $$;
 
-create function public.set_hevy_reports_enabled(p_user_id uuid, p_enabled boolean)
-returns boolean language plpgsql security definer set search_path = '' as $$
+-- Writes the preference and returns the resulting status in the same transaction, so PUT either fails before commit or
+-- returns the committed state. Null (not_oauth) when the user has no OAuth connection; repeating a call is a no-op.
+create function public.set_hevy_reports_enabled(p_user_id uuid, p_enabled boolean, p_max_attempts integer)
+returns jsonb language plpgsql security definer set search_path = '' as $$
 declare connection public.hevy_connections;
 begin
   select * into connection from public.hevy_connections where user_id = p_user_id and credential_method = 'oauth' for share;
-  if not found then return false; end if;
+  if not found then return null; end if;
   insert into public.hevy_report_settings as s (user_id, hevy_user_id, reports_enabled, updated_at)
     values (p_user_id, connection.hevy_user_id, p_enabled, clock_timestamp())
     on conflict (user_id) do update set
@@ -100,7 +102,7 @@ begin
       last_received_at = case when s.hevy_user_id = excluded.hevy_user_id then s.last_received_at end,
       last_received_revision = case when s.hevy_user_id = excluded.hevy_user_id then s.last_received_revision end,
       hevy_user_id = excluded.hevy_user_id;
-  return true;
+  return public.hevy_report_status(p_user_id, p_max_attempts);
 end;
 $$;
 
@@ -117,12 +119,12 @@ $$;
 revoke all on function public.hevy_reports_enabled(uuid) from public, anon, authenticated;
 revoke all on function public.accept_hevy_app_webhook(uuid, text, timestamptz) from public, anon, authenticated;
 revoke all on function public.hevy_report_status(uuid, integer) from public, anon, authenticated;
-revoke all on function public.set_hevy_reports_enabled(uuid, boolean) from public, anon, authenticated;
+revoke all on function public.set_hevy_reports_enabled(uuid, boolean, integer) from public, anon, authenticated;
 revoke all on function public.workout_report_eligibility(uuid, uuid) from public, anon, authenticated;
 grant execute on function public.hevy_reports_enabled(uuid) to service_role;
 grant execute on function public.accept_hevy_app_webhook(uuid, text, timestamptz) to service_role;
 grant execute on function public.hevy_report_status(uuid, integer) to service_role;
-grant execute on function public.set_hevy_reports_enabled(uuid, boolean) to service_role;
+grant execute on function public.set_hevy_reports_enabled(uuid, boolean, integer) to service_role;
 grant execute on function public.workout_report_eligibility(uuid, uuid) to service_role;
 
 commit;

@@ -385,7 +385,9 @@ at the same time.
 **Report preference and status** (`REPORTS-CONTRACT.md`): authenticated
 `GET /api/hevy/reports` returns `{ enabled, status: "off" | "waiting" |
 "working", last_received_at, last_report }`; same-origin `PUT` with
-`{ "enabled": boolean }` changes it. Both answer 404 `{ code: "not_oauth" }`
+`{ "enabled": boolean }` changes it and returns the new status from the same
+database transaction (one RPC), so a 503 means nothing was saved and a repeat
+`PUT` is harmless. Both answer 404 `{ code: "not_oauth" }`
 without an OAuth connection. API-key users keep `/api/hevy/webhook-token`.
 Reports default to on for a new OAuth connection. The preference is stored per
 Nakama user and Hevy account, outside `hevy_connections`, so it survives a

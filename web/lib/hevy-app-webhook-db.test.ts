@@ -59,7 +59,7 @@ const accept = async (hevyUser = provider, workoutId = workout) => (await db.que
 const jobs = async () => (await db.query<{ workout_id: string; connection_revision: string }>(
   "select workout_id, connection_revision from public.workout_reports")).rows;
 const status = () => result<Record<string, unknown> | null>("public.hevy_report_status($1, 5)", [first]);
-const setEnabled = (enabled: boolean) => result<boolean>("public.set_hevy_reports_enabled($1, $2)", [first, enabled]);
+const setEnabled = (enabled: boolean) => result<Record<string, unknown> | null>("public.set_hevy_reports_enabled($1, $2, 5)", [first, enabled]);
 const eligibility = (revision: string) => result("public.workout_report_eligibility($1, $2)", [first, revision]);
 
 describe("app webhook acceptance", () => {
@@ -84,12 +84,12 @@ describe("app webhook acceptance", () => {
 
   it("records the event but queues nothing for opted-out, uninvited or reconnect-required users", async () => {
     await connect();
-    expect(await setEnabled(false)).toBe(true);
+    expect(await setEnabled(false)).toMatchObject({ enabled: false, status: "off" });
     expect(await accept()).toEqual({ result: "reports_off", user_id: first });
     expect(await status()).toMatchObject({ enabled: false, status: "off" });
     expect((await status())!.last_received_at).not.toBeNull();
 
-    expect(await setEnabled(true)).toBe(true);
+    expect(await setEnabled(true)).toMatchObject({ enabled: true });
     await db.query("update public.hevy_connections set oauth_status = 'reconnect_required'");
     expect(await accept()).toEqual({ result: "reconnect_required", user_id: first });
 
@@ -103,10 +103,10 @@ describe("app webhook acceptance", () => {
 describe("report preference and status", () => {
   it("is not_oauth (null) without an OAuth connection", async () => {
     expect(await status()).toBeNull();
-    expect(await setEnabled(false)).toBe(false);
+    expect(await setEnabled(false)).toBeNull();
     await result("public.save_hevy_api_key($1, 'key', $2)", [first, first]);
     expect(await status()).toBeNull();
-    expect(await setEnabled(false)).toBe(false);
+    expect(await setEnabled(false)).toBeNull();
   });
 
   it("defaults to enabled and waiting, then working once a signed event arrives", async () => {
@@ -169,6 +169,36 @@ describe("report preference and status", () => {
     expect(await accept(otherProvider)).toEqual({ result: "queued", user_id: first });
   });
 
+  it("returns the committed status from the write itself, idempotently", async () => {
+    await connect();
+    expect(await accept()).toEqual({ result: "queued", user_id: first });
+    const off = await setEnabled(false);
+    expect(off).toEqual(await status());
+    expect(off).toMatchObject({ enabled: false, status: "off", last_report: { status: "pending" } });
+    expect(await setEnabled(false)).toEqual(off);
+    const on = await setEnabled(true);
+    expect(on).toEqual(await status());
+    expect(on).toMatchObject({ enabled: true, status: "working" });
+  });
+
+  it("rolls the write back when the status cannot be built (no committed write with a failed response)", async () => {
+    await connect();
+    await db.exec(`
+      reset role;
+      savepoint broken;
+      create or replace function public.hevy_report_status(p_user_id uuid, p_max_attempts integer)
+      returns jsonb language plpgsql as $$ begin raise exception 'status unavailable'; end; $$;
+      set local role service_role;
+      savepoint attempt;
+    `);
+    await expect(setEnabled(false)).rejects.toThrow(/status unavailable/);
+    await db.exec("rollback to savepoint attempt");
+    expect((await db.query<{ n: number }>(
+      "select count(*)::int as n from public.hevy_report_settings where reports_enabled = false")).rows[0].n).toBe(0);
+    await db.exec("reset role; rollback to savepoint broken; set local role service_role;");
+    expect(await status()).toMatchObject({ enabled: true });
+  });
+
   it("lets the worker skip after opt-out or a connection change", async () => {
     const revision = await connect();
     expect(await eligibility(revision)).toBe("eligible");
@@ -185,7 +215,7 @@ describe("report preference and status", () => {
     await db.exec("reset role; set local role authenticated");
     for (const sql of [
       `select public.hevy_report_status('${first}', 5)`,
-      `select public.set_hevy_reports_enabled('${first}', false)`,
+      `select public.set_hevy_reports_enabled('${first}', false, 5)`,
       `select public.workout_report_eligibility('${first}', '${first}')`,
       "select * from public.hevy_report_settings",
       `select * from public.accept_hevy_app_webhook('${provider}', '${workout}', now())`,

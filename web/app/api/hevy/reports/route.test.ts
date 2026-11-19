@@ -2,8 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { GET, PUT } from "./route";
 
-const mocks = vi.hoisted(() => ({ auth: vi.fn(), get: vi.fn(), set: vi.fn() }));
+const mocks = vi.hoisted(() => ({ auth: vi.fn(), get: vi.fn(), set: vi.fn(), rpc: vi.fn() }));
 vi.mock("server-only", () => ({}));
+vi.mock("@/lib/hevy-connection", async (original) => ({
+  ...await original<typeof import("@/lib/hevy-connection")>(), storage: () => ({ rpc: mocks.rpc }),
+}));
 vi.mock("@/lib/auth", () => ({ requireBetaUser: mocks.auth }));
 vi.mock("@/lib/hevy-reports", async (original) => ({
   ...await original<typeof import("@/lib/hevy-reports")>(), getReportStatus: mocks.get, setReportsEnabled: mocks.set,
@@ -85,4 +88,22 @@ it("returns 503 when settings storage is unavailable", async () => {
   const { ReportSettingsError } = await import("@/lib/hevy-reports");
   mocks.get.mockRejectedValue(new ReportSettingsError("Report settings are unavailable. Please try again."));
   expect((await GET(new NextRequest("https://nakama.test/api/hevy/reports"))).status).toBe(503);
+});
+
+it("PUT answers from the single write RPC: success returns the committed state, failure means nothing saved", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/hevy-reports")>("@/lib/hevy-reports");
+  mocks.set.mockImplementation(actual.setReportsEnabled);
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  const committed = { ...status, enabled: false, status: "off" };
+  mocks.rpc.mockResolvedValueOnce({ data: committed, error: null });
+  const ok = await PUT(put({ enabled: false }));
+  expect(ok.status).toBe(200);
+  expect(await ok.json()).toEqual(committed);
+  expect(mocks.rpc).toHaveBeenCalledTimes(1);
+  expect(mocks.rpc.mock.calls[0][0]).toBe("set_hevy_reports_enabled");
+  expect(mocks.get).not.toHaveBeenCalled();
+
+  mocks.rpc.mockResolvedValueOnce({ data: null, error: { code: "57014" } });
+  expect((await PUT(put({ enabled: false }))).status).toBe(503);
+  expect(mocks.rpc).toHaveBeenCalledTimes(2);
 });

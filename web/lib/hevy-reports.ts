@@ -35,10 +35,7 @@ function db() {
 // PostgREST returns timestamptz inside jsonb in Postgres text form; normalize to ISO for the contract.
 const iso = (value: string | null) => value === null ? null : new Date(value).toISOString();
 
-/** Null when the user has no OAuth connection (contract code not_oauth). */
-export async function getReportStatus(userId: string): Promise<ReportStatus | null> {
-  const { data, error } = await db().rpc("hevy_report_status", { p_user_id: userId, p_max_attempts: MAX_REPORT_ATTEMPTS });
-  if (error) throw failure(error.code);
+function parseStatus(data: unknown): ReportStatus | null {
   if (data === null) return null;
   const parsed = reportStatusSchema.safeParse(data);
   if (!parsed.success) throw failure("invalid_status");
@@ -50,9 +47,21 @@ export async function getReportStatus(userId: string): Promise<ReportStatus | nu
   };
 }
 
-export async function setReportsEnabled(userId: string, enabled: boolean): Promise<ReportStatus | null> {
-  const { data, error } = await db().rpc("set_hevy_reports_enabled", { p_user_id: userId, p_enabled: enabled });
+/** Null when the user has no OAuth connection (contract code not_oauth). */
+export async function getReportStatus(userId: string): Promise<ReportStatus | null> {
+  const { data, error } = await db().rpc("hevy_report_status", { p_user_id: userId, p_max_attempts: MAX_REPORT_ATTEMPTS });
   if (error) throw failure(error.code);
-  if (!data) return null;
-  return getReportStatus(userId);
+  return parseStatus(data);
+}
+
+/**
+ * One RPC that writes the preference and returns the status it committed: a failure means nothing was saved, and a
+ * success always carries the saved state (no second read that could fail after the commit). Idempotent.
+ */
+export async function setReportsEnabled(userId: string, enabled: boolean): Promise<ReportStatus | null> {
+  const { data, error } = await db().rpc("set_hevy_reports_enabled", {
+    p_user_id: userId, p_enabled: enabled, p_max_attempts: MAX_REPORT_ATTEMPTS,
+  });
+  if (error) throw failure(error.code);
+  return parseStatus(data);
 }

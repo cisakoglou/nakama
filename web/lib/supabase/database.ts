@@ -140,7 +140,7 @@ export type Database = {
       };
       hevy_reports_enabled: { Args: { p_user_id: string }; Returns: boolean };
       hevy_report_status: { Args: { p_user_id: string; p_max_attempts: number }; Returns: unknown };
-      set_hevy_reports_enabled: { Args: { p_user_id: string; p_enabled: boolean }; Returns: boolean };
+      set_hevy_reports_enabled: { Args: { p_user_id: string; p_enabled: boolean; p_max_attempts: number }; Returns: unknown };
       workout_report_eligibility: { Args: { p_user_id: string; p_revision: string }; Returns: string };
       claim_next_workout_report: {
         Args: { p_max_attempts: number };
