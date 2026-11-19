@@ -79,18 +79,39 @@ describe("OAuth routes", () => {
     expect(mocks.disconnect).toHaveBeenCalledWith(owner);
   });
 
-  it("surfaces callback errors explicitly, clears the binding and leaves active chats untouched", async () => {
+  it("redirects callback errors to the app with only the enum code, clears the binding and leaves active chats untouched", async () => {
     mocks.complete.mockRejectedValue(new HevyOAuthError("invalid_state", 400, "Start again."));
     const response = await GET(new NextRequest("https://nakama.test/api/hevy/oauth/callback?state=used&code=secret-code"));
-    expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({ code: "invalid_state", error: "Start again." });
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe("https://nakama.test/?hevy_oauth=error&code=invalid_state");
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
     expect(response.cookies.get("hevy_oauth_browser")?.maxAge).toBe(0);
     expect(mocks.disconnect).not.toHaveBeenCalled();
   });
 
+  it.each([
+    "access_denied", "invalid_state", "account_in_use", "account_mismatch", "connection_changed", "migration_required",
+    "missing_scope", "not_eligible", "provider_unavailable", "configuration_unavailable", "reconnect_required", "refresh_busy",
+  ] as const)("passes the contract code %s through", async (code) => {
+    mocks.complete.mockRejectedValue(new HevyOAuthError(code, 400, "Provider said something private."));
+    const location = (await GET(new NextRequest("https://nakama.test/api/hevy/oauth/callback?state=s&code=c"))).headers.get("location")!;
+    expect(location).toBe(`https://nakama.test/?hevy_oauth=error&code=${code}`);
+  });
+
+  it("maps any other connection failure to code=unknown without provider text", async () => {
+    const { HevyConnectionError } = await import("@/lib/hevy-connection");
+    mocks.complete.mockRejectedValue(new HevyConnectionError(503, "Database code XX000 detail"));
+    const response = await GET(new NextRequest("https://nakama.test/api/hevy/oauth/callback?state=s&code=secret-code"));
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe("https://nakama.test/?hevy_oauth=error&code=unknown");
+  });
+
   it("rejects duplicated callback parameters without consuming state", async () => {
     const response = await GET(new NextRequest("https://nakama.test/api/hevy/oauth/callback?state=one&state=two&code=secret"));
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe("https://nakama.test/?hevy_oauth=error&code=invalid_state");
+    expect(response.headers.get("location")).not.toContain("secret");
     expect(mocks.complete).not.toHaveBeenCalled();
   });
 

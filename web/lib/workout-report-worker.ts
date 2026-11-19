@@ -108,6 +108,14 @@ export function workoutReportQueue(db: Db) {
       if (error) throw dbFailure(error.code);
       return data?.units === "lb" ? "lb" : "kg";
     },
+    /** "eligible", or why the job must not deliver: "reports_off" or "connection_changed". */
+    async eligibility(job: Job): Promise<string> {
+      const { data, error } = await db.rpc("workout_report_eligibility", {
+        p_user_id: job.user_id, p_revision: job.connection_revision,
+      });
+      if (error) throw dbFailure(error.code);
+      return data;
+    },
     async deliver(job: Job, workout: HevyWorkout, content: string) {
       const { error } = await db.from("chat_conversations").insert({
         id: job.conversation_id, user_id: job.user_id, title: reportTitle(workout),
@@ -132,7 +140,21 @@ type Outcome = { status: "delivered"; reason: null; title: string } | { status: 
   | { status: "failed"; reason: FailureCode; error: unknown };
 type Notify = (userId: string, payload: ReportReadyPayload) => Promise<unknown>;
 
+// Report opt-out and connection changes win over queued work; checked before any Hevy call and again just before delivery.
+async function ineligible(queue: Queue, job: Job): Promise<Outcome | null> {
+  let eligibility: string;
+  try {
+    eligibility = await queue.eligibility(job);
+  } catch (error) {
+    if (!(error instanceof WorkoutReportStorageError)) throw error;
+    return { status: "failed", reason: "connection_unavailable", error };
+  }
+  return eligibility === "eligible" ? null : { status: "skipped", reason: eligibility };
+}
+
 async function processJob(queue: Queue, job: Job): Promise<Outcome> {
+  const blocked = await ineligible(queue, job);
+  if (blocked) return blocked;
   let hevy: HevyClient;
   try {
     hevy = await createHevyClient(job.user_id);
@@ -169,6 +191,8 @@ async function processJob(queue: Queue, job: Job): Promise<Outcome> {
     return { status: "failed", reason: "report_failed", error };
   }
 
+  const blockedLate = await ineligible(queue, job);
+  if (blockedLate) return blockedLate;
   try {
     await queue.deliver(job, workout, content);
   } catch (error) {

@@ -65,6 +65,15 @@ export type Database = {
         Update: { token_hash?: string; connection_revision?: string; created_at?: string };
         Relationships: [];
       };
+      hevy_report_settings: {
+        Row: {
+          user_id: string; hevy_user_id: string; reports_enabled: boolean;
+          last_received_at: string | null; last_received_revision: string | null; updated_at: string;
+        };
+        Insert: { user_id: string; hevy_user_id: string; reports_enabled?: boolean };
+        Update: { reports_enabled?: boolean; updated_at?: string };
+        Relationships: [];
+      };
       push_subscriptions: {
         Row: {
           id: string; user_id: string; endpoint: string; p256dh: string; auth: string;
@@ -125,6 +134,14 @@ export type Database = {
         Args: { p_token_hash: string };
         Returns: { user_id: string; connection_revision: string }[];
       };
+      accept_hevy_app_webhook: {
+        Args: { p_hevy_user_id: string; p_workout_id: string; p_available_at: string };
+        Returns: { result: string; user_id: string | null }[];
+      };
+      hevy_reports_enabled: { Args: { p_user_id: string }; Returns: boolean };
+      hevy_report_status: { Args: { p_user_id: string; p_max_attempts: number }; Returns: unknown };
+      set_hevy_reports_enabled: { Args: { p_user_id: string; p_enabled: boolean }; Returns: boolean };
+      workout_report_eligibility: { Args: { p_user_id: string; p_revision: string }; Returns: string };
       claim_next_workout_report: {
         Args: { p_max_attempts: number };
         Returns: {

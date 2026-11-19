@@ -6,6 +6,12 @@ import { completeHevyOAuth, HEVY_OAUTH_COOKIE, HEVY_OAUTH_PATH, HevyOAuthError }
 import { disconnectChats } from "@/lib/chat-lifecycle";
 
 export const runtime = "nodejs";
+
+// REPORTS-CONTRACT.md: the codes the UI explains after a failed callback; anything else is "unknown".
+const CALLBACK_ERROR_CODES: ReadonlySet<string> = new Set([
+  "access_denied", "invalid_state", "account_in_use", "account_mismatch", "connection_changed", "migration_required",
+  "missing_scope", "not_eligible", "provider_unavailable", "configuration_unavailable", "reconnect_required", "refresh_busy",
+]);
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
@@ -36,8 +42,11 @@ export async function GET(request: NextRequest) {
     return finish(access.session.respond(NextResponse.redirect(target, 303)));
   } catch (error) {
     if (!(error instanceof HevyConnectionError)) throw error;
-    return finish(access.session.json({
-      error: error.message, code: error instanceof HevyOAuthError ? error.code : "configuration_unavailable",
-    }, error.status));
+    // Only the enum code reaches the URL: never provider text, codes or tokens.
+    const code = error instanceof HevyOAuthError && CALLBACK_ERROR_CODES.has(error.code) ? error.code : "unknown";
+    const target = new URL("/", origin);
+    target.searchParams.set("hevy_oauth", "error");
+    target.searchParams.set("code", code);
+    return finish(access.session.respond(NextResponse.redirect(target, 303)));
   }
 }

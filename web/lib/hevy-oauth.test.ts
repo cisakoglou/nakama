@@ -205,6 +205,7 @@ describe("server-side credentials and rotating refresh", () => {
           claimed = true;
           return Response.json(jobs);
         }
+        if (url.pathname.endsWith("/rpc/workout_report_eligibility")) return Response.json("eligible");
         if (url.pathname.endsWith("/profiles")) return Response.json([{ units: "kg" }]);
         if (url.pathname.endsWith("/chat_conversations")) {
           saved.push(JSON.parse(String(options?.body)));

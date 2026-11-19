@@ -179,6 +179,12 @@ They do not contact Supabase, Hevy, or Anthropic.
    before deploying the shared Hevy client. It adds cross-instance request pacing
    and version-fenced handling of rejected OAuth access tokens. Both new
    migrations must precede deployment of the combined OAuth backend.
+   Then run
+   [`supabase/migrations/202611190003_hevy_app_webhook.sql`](supabase/migrations/202611190003_hevy_app_webhook.sql)
+   before deploying signed app webhooks and report controls (#22). It adds the
+   server-only report preference/receipt table and the RPCs used by
+   `/api/hevy/app-webhook`, `/api/hevy/reports` and the report worker. The worker
+   calls its eligibility RPC, so it must precede that code deployment too.
 2. Add each approved email through the SQL Editor, replacing the example:
 
    ```sql
@@ -256,8 +262,10 @@ Contract for the onboarding work in #20:
   ten-minute browser-binding cookie is scoped to `/api/hevy/oauth`.
 - `GET /api/hevy/oauth/callback` checks the same signed-in, invited user
   and atomically consumes hashed state bound to that browser. Success returns
-  `303` to `/?hevy_oauth=connected`. Failures currently return explicit
-  `{ "error": "...", "code": "..." }` JSON rather than a success-shaped redirect.
+  `303` to `/?hevy_oauth=connected`. Failures return `303` to
+  `/?hevy_oauth=error&code=<code>`, where `code` is one of the enum values in
+  the shared reports contract (`access_denied`, `invalid_state`, ...) or
+  `unknown`; no provider text or tokens reach the URL.
   The cookie is cleared and responses prevent caching/referrer leakage.
 - Existing `GET /api/account` keeps the legacy connection shape. OAuth adds
   `method: "oauth"`, `state: "active" | "reconnect_required"`, `hevy_user_id`
@@ -286,7 +294,7 @@ processing already-queued report jobs. This does **not** enable the connection
 UI (#20), signed app-webhook ingestion (#22), or API-key migration (#21). Existing API-key
 connections remain unchanged and OAuth start returns `migration_required`
 for them until that migration exists. OAuth reauthorization only accepts the
-same provider account. Keep the optional app-webhook URL unset until #22 lands.
+same provider account. Set the app-webhook URL only once #22 is deployed (see below).
 Non-Pro eligibility, PKCE support, refresh-token lifetime and provider revocation
 still need verification in #25; do not change subscription claims yet.
 
@@ -328,8 +336,66 @@ unreadable responses; check Hevy before approving an uncertain write again.
 Requests have a fifteen-second network timeout and respect chat cancellation.
 
 Local contract/database tests do not establish live Hevy OAuth eligibility
-or a successful hosted authorization round trip. The optional app-webhook
-URL must still stay unset until #22 is deployed.
+or a successful hosted authorization round trip.
+
+### Signed Hevy app webhooks and report controls (#22)
+
+OAuth users need no per-user webhook setup. In the Hevy developer portal, set the
+app's webhook URL to `$APP_ORIGIN/api/hevy/app-webhook` (production:
+`https://nakama-production-60d5.up.railway.app/api/hevy/app-webhook`) only after
+this code and migration `202611190003_hevy_app_webhook.sql` are deployed.
+
+Per Hevy's documentation (developers.hevy.com, Authentication > App webhooks),
+Hevy POSTs `{"type":"workout.created","workoutId":"<uuid>","userId":"<uuid>"}`
+whenever a connected user (with `read-workout` or `modify-workout`) saves a new
+workout. `userId` is the `user_id` from the token response, stored as
+`hevy_connections.hevy_user_id`. `Hevy-Signature` is `sha256=` plus the hex
+HMAC-SHA256 of the raw body keyed with the OAuth client secret. Hevy expects 200
+within five seconds and retries anything else up to five times.
+
+The route reads at most 4 KB within a three-second deadline, verifies the
+signature over the exact bytes with a timing-safe comparison, and only then
+parses JSON. Missing/invalid signatures return 401, oversized bodies 413 and
+malformed signed payloads 400. Other signed event types are acknowledged and
+ignored. The owner comes only from the signed `userId` mapped to an OAuth
+connection, never from email or an unsigned field. One database transaction
+records the receipt and, if the user is invited, authorized (`active`) and has
+reports on, inserts the job into the existing `workout_reports` queue. The
+`(user_id, workout_id)` key means a workout delivered through both this route
+and the personal `/api/hevy/webhook` produces one job. The route returns 200
+only after that commit; storage failure or timeout returns a retryable 503.
+Signed events for unknown, uninvited, reconnect-required or opted-out users are
+acknowledged (200) without a job, so Hevy does not retry them; logs record the
+reason, the Nakama user id and an 8-character prefix of the Hevy user id, never
+the signature, secret or body values. Reports are never generated in the route.
+
+**Client-secret rotation.** Verification uses `HEVY_OAUTH_CLIENT_SECRET`, and
+Hevy signs with the new secret immediately after a rotation. Until Railway's
+variable is updated (and the service restarted), every delivery fails
+verification with 401 and is retried by Hevy up to five times. Hevy documents
+no later redelivery, so workouts whose retries run out get no report. Rotate during a
+quiet period, update the Railway variable immediately, and check the logs for
+`mismatch_signature`. The same secret authenticates token exchange and refresh,
+so a stale value breaks connecting and token refresh too. Nakama does not accept an old and a new secret
+at the same time.
+
+**Report preference and status** (`REPORTS-CONTRACT.md`): authenticated
+`GET /api/hevy/reports` returns `{ enabled, status: "off" | "waiting" |
+"working", last_received_at, last_report }`; same-origin `PUT` with
+`{ "enabled": boolean }` changes it. Both answer 404 `{ code: "not_oauth" }`
+without an OAuth connection. API-key users keep `/api/hevy/webhook-token`.
+Reports default to on for a new OAuth connection. The preference is stored per
+Nakama user and Hevy account, outside `hevy_connections`, so it survives a
+disconnect/reconnect of the same Hevy account and is never touched by token
+refresh; a different Hevy account starts enabled. `last_received_at` counts
+only signed events for the current connection revision. `last_report` is the
+newest job for that revision; `pending` covers queued and retrying jobs.
+`delivered` is reported only after the chat is saved.
+
+Turning reports off stops new jobs at once. The worker re-checks the
+preference and the connection revision before any Hevy call and again just
+before saving the chat, so already-queued jobs end as `skipped`
+(`reports_off` or `connection_changed`) without a report or notification.
 
 ### Data saved in this version
 
@@ -407,8 +473,8 @@ in each account-app service, and set `APP_ORIGIN` to its exact public HTTPS
 origin. Do not derive this trusted origin from incoming forwarded-host headers.
 When both services use the same database, preserve the same
 `HEVY_CREDENTIAL_ENCRYPTION_KEY`; generating a new one breaks saved connections.
-Apply the OAuth and shared-request-budget migrations before deploying code
-that calls their RPCs. Do not treat preview as a separate database sandbox.
+Apply the OAuth, shared-request-budget and app-webhook migrations, in order,
+before deploying code that calls their RPCs. Do not treat preview as a separate database sandbox.
 
 Validate changes on preview before promoting them to production. The
 database migrations, active signup hook, provider configuration, and real

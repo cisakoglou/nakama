@@ -65,7 +65,9 @@ function fakeDb(failInsert?: string) {
     };
     return builder;
   };
-  const rpc = async (_name: string, { p_max_attempts }: { p_max_attempts: number }) => {
+  const state = { eligibility: "eligible" };
+  const rpc = async (name: string, { p_max_attempts }: { p_max_attempts: number }) => {
+    if (name === "workout_report_eligibility") return { data: state.eligibility, error: null };
     const due = (tables.workout_reports as WorkoutReportRow[]).find((r) => Date.parse(r.available_at) <= clock.getTime()
       && (r.status === "queued" || (r.status === "failed" && r.attempts < p_max_attempts)));
     if (!due) return { data: [], error: null };
@@ -79,7 +81,7 @@ function fakeDb(failInsert?: string) {
     available_at: new Date(clock.getTime() + delayMs).toISOString(), conversation_id: `00000000-0000-4000-8000-${String(++conversations).padStart(12, "0")}`,
     last_error: null,
   });
-  return { tables, enqueue, client: { from: query, rpc } as never };
+  return { tables, enqueue, state, client: { from: query, rpc } as never };
 }
 
 function workout(id: string, day: number, weight: number) {
@@ -513,5 +515,42 @@ describe("in-process worker lifecycle", () => {
     wakeWorkoutReportWorker();
     await vi.advanceTimersByTimeAsync(WORKOUT_REPORT_FIRST_ATTEMPT_DELAY_MS + 1_000);
     await vi.waitFor(() => expect(db.tables.workout_reports[0].status).toBe("delivered"));
+  });
+});
+
+describe("report eligibility (opt-out and connection changes)", () => {
+  it("skips a queued job without calling Hevy, delivering or notifying once reports are off", async () => {
+    const db = fakeDb();
+    db.enqueue();
+    db.state.eligibility = "reports_off";
+    const summary = await drain(db);
+    expect(summary).toMatchObject({ claimed: 1, skipped: 1, delivered: 0 });
+    expect(db.tables.workout_reports[0]).toMatchObject({ status: "skipped", last_error: "reports_off" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mocks.load).not.toHaveBeenCalled();
+    expect(db.tables.chat_conversations).toEqual([]);
+    expect(mocks.notify).not.toHaveBeenCalled();
+  });
+
+  it("re-checks just before delivery, so an opt-out during generation still prevents the report", async () => {
+    const db = fakeDb();
+    db.enqueue();
+    fetchMock.mockImplementationOnce(async (input, init) => {
+      db.state.eligibility = "reports_off";
+      return (fetchMock.getMockImplementation()!)(input, init);
+    });
+    const summary = await drain(db);
+    expect(summary).toMatchObject({ skipped: 1, delivered: 0 });
+    expect(fetchMock).toHaveBeenCalled();
+    expect(db.tables.chat_conversations).toEqual([]);
+    expect(mocks.notify).not.toHaveBeenCalled();
+  });
+
+  it("skips jobs from a replaced connection", async () => {
+    const db = fakeDb();
+    db.enqueue();
+    db.state.eligibility = "connection_changed";
+    expect(await drain(db)).toMatchObject({ skipped: 1 });
+    expect(db.tables.workout_reports[0]).toMatchObject({ status: "skipped", last_error: "connection_changed" });
   });
 });
