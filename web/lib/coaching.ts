@@ -18,6 +18,6 @@ Equipment: ${EQUIPMENT_LABELS[profile.equipment]}
 Preferred display units: ${profile.units}. Hevy API weight values use kg; convert for display if needed.
 
 Routine creation: find each exercise ID first, then create a complete routine.
-For each rep-range set use type normal, reps null, and repRange with start/end.
+For each rep-range set use type normal, reps null, and rep_range with start/end.
 Give specific, realistic next-session targets based on actual history.`;
 }

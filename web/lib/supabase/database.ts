@@ -15,6 +15,16 @@ export type WorkoutReportRow = {
   updated_at: string;
 };
 
+export type HevyConnectionRow = {
+  user_id: string; encrypted_key: string | null; revision: string; updated_at: string;
+  credential_method: "api_key" | "oauth"; encrypted_oauth: string | null;
+  hevy_user_id: string | null; hevy_username: string | null; access_expires_at: string | null;
+  oauth_status: "active" | "reconnect_required"; token_version: number;
+  refresh_attempt_id: string | null; refresh_started_at: string | null;
+};
+
+type RefreshOwner = { p_user_id: string; p_revision: string; p_token_version: number; p_attempt_id: string };
+
 export type Database = {
   public: {
     Tables: {
@@ -35,15 +45,33 @@ export type Database = {
         Relationships: [];
       };
       hevy_connections: {
-        Row: { user_id: string; encrypted_key: string; revision: string; updated_at: string };
-        Insert: { user_id: string; encrypted_key: string; revision: string; updated_at: string };
-        Update: { encrypted_key?: string; revision?: string; updated_at?: string };
+        Row: HevyConnectionRow;
+        Insert: Pick<HevyConnectionRow, "user_id" | "revision"> & Partial<Omit<HevyConnectionRow, "user_id" | "revision">>;
+        Update: Partial<Omit<HevyConnectionRow, "user_id">>;
+        Relationships: [];
+      };
+      hevy_oauth_states: {
+        Row: {
+          user_id: string; state_hash: string; browser_hash: string; expected_revision: string | null;
+          expires_at: string; consumed_at: string | null;
+        };
+        Insert: { user_id: string; state_hash: string; browser_hash: string; expected_revision?: string | null };
+        Update: { consumed_at?: string };
         Relationships: [];
       };
       hevy_webhook_tokens: {
         Row: { user_id: string; token_hash: string; connection_revision: string; created_at: string };
         Insert: { user_id: string; token_hash: string; connection_revision: string; created_at?: string };
         Update: { token_hash?: string; connection_revision?: string; created_at?: string };
+        Relationships: [];
+      };
+      hevy_report_settings: {
+        Row: {
+          user_id: string; hevy_user_id: string; reports_enabled: boolean;
+          last_received_at: string | null; last_received_revision: string | null; updated_at: string;
+        };
+        Insert: { user_id: string; hevy_user_id: string; reports_enabled?: boolean };
+        Update: { reports_enabled?: boolean; updated_at?: string };
         Relationships: [];
       };
       push_subscriptions: {
@@ -71,10 +99,49 @@ export type Database = {
     Functions: {
       has_beta_access: { Args: Record<string, never>; Returns: boolean };
       hevy_connection_status: { Args: Record<string, never>; Returns: unknown };
+      save_hevy_api_key: {
+        Args: { p_user_id: string; p_encrypted_key: string; p_revision: string };
+        Returns: unknown;
+      };
+      disconnect_hevy: { Args: { p_user_id: string }; Returns: undefined };
+      begin_hevy_oauth: {
+        Args: { p_user_id: string; p_state_hash: string; p_browser_hash: string };
+        Returns: string;
+      };
+      consume_hevy_oauth_state: {
+        Args: { p_user_id: string; p_state_hash: string; p_browser_hash: string };
+        Returns: boolean;
+      };
+      complete_hevy_oauth: {
+        Args: {
+          p_user_id: string; p_state_hash: string; p_hevy_user_id: string;
+          p_username: string; p_encrypted_oauth: string; p_expires_at: string;
+        };
+        Returns: string;
+      };
+      claim_hevy_oauth_refresh: { Args: RefreshOwner; Returns: string };
+      finish_hevy_oauth_refresh: {
+        Args: RefreshOwner & { p_encrypted_oauth: string; p_expires_at: string };
+        Returns: boolean;
+      };
+      fail_hevy_oauth_refresh: { Args: RefreshOwner & { p_retryable: boolean }; Returns: boolean };
+      reserve_hevy_request: { Args: Record<string, never>; Returns: number };
+      reject_hevy_oauth_token: {
+        Args: { p_user_id: string; p_revision: string; p_token_version: number };
+        Returns: undefined;
+      };
       hevy_webhook_owner: {
         Args: { p_token_hash: string };
         Returns: { user_id: string; connection_revision: string }[];
       };
+      accept_hevy_app_webhook: {
+        Args: { p_hevy_user_id: string; p_workout_id: string; p_available_at: string };
+        Returns: { result: string; user_id: string | null }[];
+      };
+      hevy_reports_enabled: { Args: { p_user_id: string }; Returns: boolean };
+      hevy_report_status: { Args: { p_user_id: string; p_max_attempts: number }; Returns: unknown };
+      set_hevy_reports_enabled: { Args: { p_user_id: string; p_enabled: boolean }; Returns: boolean };
+      workout_report_eligibility: { Args: { p_user_id: string; p_revision: string }; Returns: string };
       claim_next_workout_report: {
         Args: { p_max_attempts: number };
         Returns: {

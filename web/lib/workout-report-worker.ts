@@ -1,7 +1,9 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
-import { HevyConnectionError, loadHevyConnection, storage } from "@/lib/hevy-connection";
+import { HevyConnectionError, storage } from "@/lib/hevy-connection";
+import { HevyOAuthError } from "@/lib/hevy-oauth";
+import { createHevyClient, HevyConnectionChangedError, HevyRequestError, type HevyClient } from "@/lib/hevy-client";
 import { WORKOUT_REPORT_FIRST_ATTEMPT_DELAY_MS } from "@/lib/hevy-webhook";
 import { notifyReportReady, type ReportReadyPayload } from "@/lib/push";
 import type { Database } from "@/lib/supabase/database";
@@ -9,7 +11,6 @@ import {
   generateWorkoutReport, hevyWorkoutSchema, historyFromExerciseHistory, renderWorkoutReport, type HevyWorkout,
 } from "@/lib/workout-report";
 
-const HEVY_API = "https://api.hevyapp.com/v1";
 export const MAX_REPORT_ATTEMPTS = 5;
 const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 30 * 60_000, 2 * 60 * 60_000];
 // A 404 usually means Hevy's API has not caught up with its webhook yet, so it is retried. Three attempts span
@@ -37,38 +38,14 @@ export type WorkoutReportDrainSummary = {
 
 export class WorkoutReportStorageError extends Error {}
 
-class HevyRequestError extends Error {
-  constructor(public readonly status: number | null) { super(`Hevy request failed (${status ?? "network"})`); }
-}
-
 const exerciseHistorySchema = z.object({ exercise_history: z.array(z.unknown()) });
-
-async function hevyGet(apiKey: string, path: string, params: Record<string, string | number> = {}) {
-  const url = new URL(`${HEVY_API}${path}`);
-  for (const [name, value] of Object.entries(params)) url.searchParams.set(name, String(value));
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      headers: { "api-key": apiKey, accept: "application/json" },
-      cache: "no-store", signal: AbortSignal.timeout(15_000),
-    });
-  } catch (error) {
-    if (!(error instanceof TypeError) && !(error instanceof DOMException)) throw error;
-    throw new HevyRequestError(null);
-  }
-  if (!response.ok) {
-    await response.body?.cancel();
-    throw new HevyRequestError(response.status);
-  }
-  return response.json() as Promise<unknown>;
-}
 
 /**
  * Full (all-time) history per distinct exercise in the workout, grouped into per-workout sessions.
  * No date range is sent: the report itself narrows to 90 days for comparisons and charts, and uses
  * everything only for all-time PRs.
  */
-async function exerciseHistory(apiKey: string, workout: HevyWorkout) {
+async function exerciseHistory(hevy: HevyClient, workout: HevyWorkout) {
   const titles = new Map<string, string>();
   for (const exercise of workout.exercises) {
     if (!titles.has(exercise.exercise_template_id)) titles.set(exercise.exercise_template_id, exercise.title);
@@ -82,10 +59,10 @@ async function exerciseHistory(apiKey: string, workout: HevyWorkout) {
       const [templateId, title] = targets[index];
       let body: unknown;
       try {
-        body = await hevyGet(apiKey, `/exercise_history/${encodeURIComponent(templateId)}`);
+        body = await hevy.request(`/exercise_history/${encodeURIComponent(templateId)}`);
       } catch (error) {
         // No history, or a deleted/custom template: this exercise just has nothing to compare.
-        if (error instanceof HevyRequestError && error.status === 404) {
+        if (error instanceof HevyRequestError && error.providerStatus === 404) {
           responses[index] = { templateId, title, entries: [] };
           continue;
         }
@@ -131,6 +108,14 @@ export function workoutReportQueue(db: Db) {
       if (error) throw dbFailure(error.code);
       return data?.units === "lb" ? "lb" : "kg";
     },
+    /** "eligible", or why the job must not deliver: "reports_off" or "connection_changed". */
+    async eligibility(job: Job): Promise<string> {
+      const { data, error } = await db.rpc("workout_report_eligibility", {
+        p_user_id: job.user_id, p_revision: job.connection_revision,
+      });
+      if (error) throw dbFailure(error.code);
+      return data;
+    },
     async deliver(job: Job, workout: HevyWorkout, content: string) {
       const { error } = await db.from("chat_conversations").insert({
         id: job.conversation_id, user_id: job.user_id, title: reportTitle(workout),
@@ -155,24 +140,38 @@ type Outcome = { status: "delivered"; reason: null; title: string } | { status: 
   | { status: "failed"; reason: FailureCode; error: unknown };
 type Notify = (userId: string, payload: ReportReadyPayload) => Promise<unknown>;
 
-async function processJob(queue: Queue, job: Job): Promise<Outcome> {
-  let apiKey: string;
+// Report opt-out and connection changes win over queued work; checked before any Hevy call and again just before delivery.
+async function ineligible(queue: Queue, job: Job): Promise<Outcome | null> {
+  let eligibility: string;
   try {
-    const connection = await loadHevyConnection(job.user_id);
-    if (connection.revision !== job.connection_revision) return { status: "skipped", reason: "connection_changed" };
-    apiKey = connection.apiKey;
+    eligibility = await queue.eligibility(job);
+  } catch (error) {
+    if (!(error instanceof WorkoutReportStorageError)) throw error;
+    return { status: "failed", reason: "connection_unavailable", error };
+  }
+  return eligibility === "eligible" ? null : { status: "skipped", reason: eligibility };
+}
+
+async function processJob(queue: Queue, job: Job): Promise<Outcome> {
+  const blocked = await ineligible(queue, job);
+  if (blocked) return blocked;
+  let hevy: HevyClient;
+  try {
+    hevy = await createHevyClient(job.user_id);
+    if (hevy.revision !== job.connection_revision) return { status: "skipped", reason: "connection_changed" };
   } catch (error) {
     if (!(error instanceof HevyConnectionError)) throw error;
-    if (error.status === 409) return { status: "skipped", reason: "connection_removed" };
+    if (error.status === 409 && !(error instanceof HevyOAuthError)) return { status: "skipped", reason: "connection_removed" };
     return { status: "failed", reason: "connection_unavailable", error };
   }
 
   let workout: HevyWorkout | null;
   try {
-    workout = parseWorkout(await hevyGet(apiKey, `/workouts/${encodeURIComponent(job.workout_id)}`));
+    workout = parseWorkout(await hevy.request(`/workouts/${encodeURIComponent(job.workout_id)}`));
   } catch (error) {
-    if (!(error instanceof HevyRequestError)) throw error;
-    if (error.status === 404) {
+    if (error instanceof HevyConnectionChangedError) return { status: "skipped", reason: "connection_changed" };
+    if (!(error instanceof HevyConnectionError)) throw error;
+    if (error instanceof HevyRequestError && error.providerStatus === 404) {
       return job.attempts >= WORKOUT_NOT_FOUND_MAX_ATTEMPTS
         ? { status: "skipped", reason: "workout_not_found" }
         : { status: "failed", reason: "workout_not_found", error };
@@ -184,13 +183,16 @@ async function processJob(queue: Queue, job: Job): Promise<Outcome> {
   let content: string;
   try {
     const units = await queue.units(job.user_id);
-    const history = await exerciseHistory(apiKey, workout);
+    const history = await exerciseHistory(hevy, workout);
     content = renderWorkoutReport(generateWorkoutReport(workout, history, units));
   } catch (error) {
-    if (error instanceof HevyRequestError) return { status: "failed", reason: "hevy_unavailable", error };
+    if (error instanceof HevyConnectionChangedError) return { status: "skipped", reason: "connection_changed" };
+    if (error instanceof HevyConnectionError) return { status: "failed", reason: "hevy_unavailable", error };
     return { status: "failed", reason: "report_failed", error };
   }
 
+  const blockedLate = await ineligible(queue, job);
+  if (blockedLate) return blockedLate;
   try {
     await queue.deliver(job, workout, content);
   } catch (error) {

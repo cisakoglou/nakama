@@ -28,6 +28,7 @@ beforeAll(async () => {
   for (const file of [
     "202610180001_invite_only_profiles.sql", "202610180002_hevy_connections.sql",
     "202611040001_chat_conversations.sql", "202611130001_workout_reports.sql",
+    "202611190001_hevy_oauth.sql",
   ]) {
     await db.exec(await readFile(new URL(`../../supabase/migrations/${file}`, import.meta.url), "utf8"));
   }

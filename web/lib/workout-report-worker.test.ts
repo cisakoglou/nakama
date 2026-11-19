@@ -6,6 +6,7 @@ import {
   WORKOUT_NOT_FOUND_MAX_ATTEMPTS,
 } from "./workout-report-worker";
 import { WORKOUT_REPORT_FIRST_ATTEMPT_DELAY_MS } from "./hevy-webhook";
+import { HevyOAuthError } from "./hevy-oauth";
 
 const mocks = vi.hoisted(() => ({
   load: vi.fn(), generate: vi.fn(), storage: vi.fn(), notify: vi.fn(), actual: undefined as undefined | ((...args: never[]) => unknown),
@@ -13,8 +14,12 @@ const mocks = vi.hoisted(() => ({
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/hevy-connection", async (original) => ({
   ...await original<typeof import("@/lib/hevy-connection")>(),
-  loadHevyConnection: mocks.load, storage: mocks.storage,
+  storage: mocks.storage,
 }));
+vi.mock("@/lib/hevy-oauth", async original => ({
+  ...await original<typeof import("@/lib/hevy-oauth")>(), loadHevyCredentials: mocks.load,
+}));
+vi.mock("@/lib/hevy-rate-limit", () => ({ waitForHevyRequest: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("@/lib/push", () => ({ notifyReportReady: mocks.notify }));
 vi.mock("@/lib/workout-report", async (original) => {
   const actual = await original<typeof import("@/lib/workout-report")>();
@@ -60,7 +65,9 @@ function fakeDb(failInsert?: string) {
     };
     return builder;
   };
-  const rpc = async (_name: string, { p_max_attempts }: { p_max_attempts: number }) => {
+  const state = { eligibility: "eligible" };
+  const rpc = async (name: string, { p_max_attempts }: { p_max_attempts: number }) => {
+    if (name === "workout_report_eligibility") return { data: state.eligibility, error: null };
     const due = (tables.workout_reports as WorkoutReportRow[]).find((r) => Date.parse(r.available_at) <= clock.getTime()
       && (r.status === "queued" || (r.status === "failed" && r.attempts < p_max_attempts)));
     if (!due) return { data: [], error: null };
@@ -74,7 +81,7 @@ function fakeDb(failInsert?: string) {
     available_at: new Date(clock.getTime() + delayMs).toISOString(), conversation_id: `00000000-0000-4000-8000-${String(++conversations).padStart(12, "0")}`,
     last_error: null,
   });
-  return { tables, enqueue, client: { from: query, rpc } as never };
+  return { tables, enqueue, state, client: { from: query, rpc } as never };
 }
 
 function workout(id: string, day: number, weight: number) {
@@ -122,7 +129,7 @@ beforeEach(() => {
   vi.spyOn(console, "warn").mockImplementation(() => {});
   vi.spyOn(console, "info").mockImplementation(() => {});
   vi.stubGlobal("fetch", fetchMock);
-  mocks.load.mockResolvedValue({ apiKey: "personal-key", revision });
+  mocks.load.mockResolvedValue({ method: "api_key", apiKey: "personal-key", revision });
   mocks.notify.mockResolvedValue(null);
   const fresh = workout(workoutId, 12, 102.5);
   workoutsById = { [workoutId]: fresh };
@@ -241,12 +248,49 @@ describe("workout report worker", () => {
   it("uses each job owner's own Hevy connection and units", async () => {
     const db = fakeDb();
     db.enqueue(other);
-    mocks.load.mockImplementation(async (userId: string) => ({ apiKey: `key-${userId}`, revision }));
+    mocks.load.mockImplementation(async (userId: string) => ({ method: "api_key", apiKey: `key-${userId}`, revision }));
     await drain(db);
     expect(mocks.load).toHaveBeenCalledWith(other);
     expect(JSON.stringify(fetchMock.mock.calls[0][1]?.headers)).toContain(`key-${other}`);
     expect(mocks.generate.mock.calls[0][2]).toBe("lb");
     expect(db.tables.chat_conversations[0]).toMatchObject({ user_id: other });
+  });
+
+  it("uses OAuth for both workout/history requests and still delivers the same report and notification", async () => {
+    const db = fakeDb();
+    db.enqueue();
+    mocks.load.mockResolvedValue({ method: "oauth", accessToken: "private-token", tokenVersion: 1, revision });
+    expect(await drain(db)).toMatchObject({ delivered: 1 });
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(1);
+    for (const [, init] of fetchMock.mock.calls) {
+      expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer private-token");
+      expect(new Headers(init?.headers).has("api-key")).toBe(false);
+    }
+    expect(JSON.stringify(db.tables.chat_conversations)).not.toContain("private-token");
+    expect(mocks.notify).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains reconnect-required jobs as failures instead of treating them as disconnected accounts", async () => {
+    const db = fakeDb();
+    db.enqueue();
+    mocks.load.mockRejectedValue(new HevyOAuthError("reconnect_required", 409, "Reconnect Hevy."));
+    expect(await drain(db)).toMatchObject({ failed: 1, skipped: 0 });
+    expect(db.tables.workout_reports[0]).toMatchObject({ last_error: "connection_unavailable" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("stops a report if its connection is replaced between workout and history reads", async () => {
+    const db = fakeDb();
+    db.enqueue();
+    let loads = 0;
+    mocks.load.mockImplementation(async () => ({
+      method: "oauth", accessToken: "private-token", tokenVersion: 1, revision: ++loads < 3 ? revision : "new-revision",
+    }));
+    expect(await drain(db)).toMatchObject({ skipped: 1, delivered: 0 });
+    expect(db.tables.workout_reports[0]).toMatchObject({ last_error: "connection_changed" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(db.tables.chat_conversations).toEqual([]);
+    expect(mocks.notify).not.toHaveBeenCalled();
   });
 
   it("skips jobs queued for a replaced or removed Hevy connection without calling Hevy", async () => {
@@ -255,7 +299,7 @@ describe("workout report worker", () => {
     db.enqueue(other, "second");
     mocks.load.mockImplementation(async (userId: string) => {
       if (userId === other) throw new HevyConnectionError(409, "Connect");
-      return { apiKey: "new-key", revision };
+      return { method: "api_key", apiKey: "new-key", revision };
     });
     expect(await drain(db)).toMatchObject({ skipped: 2, delivered: 0 });
     expect(db.tables.workout_reports.map((r) => r.last_error)).toEqual(["connection_changed", "connection_removed"]);
@@ -348,7 +392,7 @@ describe("workout report worker", () => {
   it("recovers on retry after Hevy is temporarily unavailable", async () => {
     const db = fakeDb();
     db.enqueue();
-    fetchMock.mockResolvedValueOnce(new Response("", { status: 429 }));
+    for (let attempt = 0; attempt < 3; attempt++) fetchMock.mockResolvedValueOnce(new Response("", { status: 429 }));
     expect(await drain(db)).toMatchObject({ failed: 1 });
     expect(db.tables.workout_reports[0]).toMatchObject({ last_error: "hevy_unavailable" });
     clock = new Date(clock.getTime() + 60_000);
@@ -471,5 +515,42 @@ describe("in-process worker lifecycle", () => {
     wakeWorkoutReportWorker();
     await vi.advanceTimersByTimeAsync(WORKOUT_REPORT_FIRST_ATTEMPT_DELAY_MS + 1_000);
     await vi.waitFor(() => expect(db.tables.workout_reports[0].status).toBe("delivered"));
+  });
+});
+
+describe("report eligibility (opt-out and connection changes)", () => {
+  it("skips a queued job without calling Hevy, delivering or notifying once reports are off", async () => {
+    const db = fakeDb();
+    db.enqueue();
+    db.state.eligibility = "reports_off";
+    const summary = await drain(db);
+    expect(summary).toMatchObject({ claimed: 1, skipped: 1, delivered: 0 });
+    expect(db.tables.workout_reports[0]).toMatchObject({ status: "skipped", last_error: "reports_off" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mocks.load).not.toHaveBeenCalled();
+    expect(db.tables.chat_conversations).toEqual([]);
+    expect(mocks.notify).not.toHaveBeenCalled();
+  });
+
+  it("re-checks just before delivery, so an opt-out during generation still prevents the report", async () => {
+    const db = fakeDb();
+    db.enqueue();
+    fetchMock.mockImplementationOnce(async (input, init) => {
+      db.state.eligibility = "reports_off";
+      return (fetchMock.getMockImplementation()!)(input, init);
+    });
+    const summary = await drain(db);
+    expect(summary).toMatchObject({ skipped: 1, delivered: 0 });
+    expect(fetchMock).toHaveBeenCalled();
+    expect(db.tables.chat_conversations).toEqual([]);
+    expect(mocks.notify).not.toHaveBeenCalled();
+  });
+
+  it("skips jobs from a replaced connection", async () => {
+    const db = fakeDb();
+    db.enqueue();
+    db.state.eligibility = "connection_changed";
+    expect(await drain(db)).toMatchObject({ skipped: 1 });
+    expect(db.tables.workout_reports[0]).toMatchObject({ status: "skipped", last_error: "connection_changed" });
   });
 });
